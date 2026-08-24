@@ -1,0 +1,52 @@
+{
+  "name": "@yesprasad/deep-graph",
+  "version": "0.1.0",
+  "description": "Compiler-aware dependency graph extraction for TypeScript projects",
+  "bin": {
+    "deep-graph": "./bin/deep-graph.js",
+    "deep-graph-mcp": "./bin/deep-graph-mcp.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "bin",
+    "install.sh"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x bin/deep-graph.js bin/deep-graph-mcp.js",
+    "dev": "tsx src/cli/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "typescript",
+    "dependency-graph",
+    "compiler",
+    "blast-radius",
+    "impact-analysis",
+    "static-analysis",
+    "cli",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "author": "Eshwar Sowbhagya Prasad Yaddanapudi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yesprasad/deep-graph.git"
+  },
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "chalk": "^4.1.2",
+    "cli-table3": "^0.6.5",
+    "commander": "^12.0.0",
+    "ora": "^5.4.1",
+    "typescript": "^5.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0"
+  }
+}

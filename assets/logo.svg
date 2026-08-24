@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 120" width="440" height="120">
+  <g transform="translate(16, 16)">
+    <!-- Opening curly brace — thin -->
+    <text x="0" y="68" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="72" font-weight="200" opacity="0.85">{</text>
+
+    <!-- Source node -->
+    <circle cx="42" cy="42" r="6" fill="#F59E0B"/>
+
+    <!-- Level 1 edges + nodes -->
+    <line x1="48" y1="38" x2="62" y2="24" stroke="#F59E0B" stroke-width="2" opacity="0.65"/>
+    <circle cx="66" cy="21" r="4.5" fill="#F59E0B" opacity="0.65"/>
+
+    <line x1="48" y1="42" x2="66" y2="42" stroke="#F59E0B" stroke-width="2" opacity="0.55"/>
+    <circle cx="70" cy="42" r="3.5" fill="#F59E0B" opacity="0.55"/>
+
+    <line x1="48" y1="46" x2="62" y2="60" stroke="#F59E0B" stroke-width="2" opacity="0.65"/>
+    <circle cx="66" cy="64" r="4.5" fill="#F59E0B" opacity="0.65"/>
+
+    <!-- Level 2 edges + nodes -->
+    <line x1="70" y1="19" x2="82" y2="12" stroke="#F59E0B" stroke-width="1.4" opacity="0.35"/>
+    <circle cx="85" cy="10" r="2.5" fill="#F59E0B" opacity="0.35"/>
+
+    <line x1="70" y1="23" x2="82" y2="30" stroke="#F59E0B" stroke-width="1.4" opacity="0.3"/>
+    <circle cx="85" cy="32" r="2.5" fill="#F59E0B" opacity="0.3"/>
+
+    <line x1="70" y1="62" x2="82" y2="55" stroke="#F59E0B" stroke-width="1.4" opacity="0.3"/>
+    <circle cx="85" cy="53" r="2.5" fill="#F59E0B" opacity="0.3"/>
+
+    <line x1="70" y1="66" x2="82" y2="74" stroke="#F59E0B" stroke-width="1.4" opacity="0.35"/>
+    <circle cx="85" cy="76" r="2.5" fill="#F59E0B" opacity="0.35"/>
+
+    <!-- Closing curly brace — thin -->
+    <text x="90" y="68" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="72" font-weight="200" opacity="0.85">}</text>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="158" y="48" fill="#FFFFFF" font-family="'JetBrains Mono', monospace" font-size="24" font-weight="700" letter-spacing="-0.5">deep-graph</text>
+  <text x="158" y="72" fill="#AAAAAA" font-family="'JetBrains Mono', monospace" font-size="11">Beyond the diff.</text>
+  <text x="158" y="90" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="11">Every dependency, resolved.</text>
+</svg>

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <!-- Background -->
+  <rect width="1280" height="640" fill="#0A0A0A"/>
+
+  <!-- Subtle grid pattern -->
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1A1A1A" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+
+  <!-- Logo mark — centered, larger -->
+  <g transform="translate(440, 180)">
+    <!-- Opening curly brace -->
+    <text x="0" y="136" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="144" font-weight="200" opacity="0.85">{</text>
+
+    <!-- Source node -->
+    <circle cx="84" cy="84" r="12" fill="#F59E0B"/>
+
+    <!-- Level 1 -->
+    <line x1="96" y1="76" x2="124" y2="48" stroke="#F59E0B" stroke-width="3" opacity="0.65"/>
+    <circle cx="132" cy="42" r="9" fill="#F59E0B" opacity="0.65"/>
+
+    <line x1="96" y1="84" x2="132" y2="84" stroke="#F59E0B" stroke-width="3" opacity="0.55"/>
+    <circle cx="140" cy="84" r="7" fill="#F59E0B" opacity="0.55"/>
+
+    <line x1="96" y1="92" x2="124" y2="120" stroke="#F59E0B" stroke-width="3" opacity="0.65"/>
+    <circle cx="132" cy="128" r="9" fill="#F59E0B" opacity="0.65"/>
+
+    <!-- Level 2 -->
+    <line x1="140" y1="38" x2="164" y2="24" stroke="#F59E0B" stroke-width="2" opacity="0.35"/>
+    <circle cx="170" cy="20" r="5" fill="#F59E0B" opacity="0.35"/>
+
+    <line x1="140" y1="46" x2="164" y2="60" stroke="#F59E0B" stroke-width="2" opacity="0.3"/>
+    <circle cx="170" cy="64" r="5" fill="#F59E0B" opacity="0.3"/>
+
+    <line x1="140" y1="124" x2="164" y2="110" stroke="#F59E0B" stroke-width="2" opacity="0.3"/>
+    <circle cx="170" cy="106" r="5" fill="#F59E0B" opacity="0.3"/>
+
+    <line x1="140" y1="132" x2="164" y2="148" stroke="#F59E0B" stroke-width="2" opacity="0.35"/>
+    <circle cx="170" cy="152" r="5" fill="#F59E0B" opacity="0.35"/>
+
+    <!-- Closing curly brace -->
+    <text x="180" y="136" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="144" font-weight="200" opacity="0.85">}</text>
+  </g>
+
+  <!-- Wordmark below -->
+  <text x="640" y="440" fill="#FFFFFF" font-family="'JetBrains Mono', monospace" font-size="48" font-weight="700" text-anchor="middle" letter-spacing="-1">deep-graph</text>
+  <text x="640" y="490" fill="#AAAAAA" font-family="'JetBrains Mono', monospace" font-size="20" text-anchor="middle">Beyond the diff.</text>
+  <text x="640" y="520" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="20" text-anchor="middle">Every dependency, resolved.</text>
+
+  <!-- Version badge -->
+  <text x="640" y="580" fill="#555555" font-family="'JetBrains Mono', monospace" font-size="14" text-anchor="middle">Compiler-resolved dependency graphs for TypeScript</text>
+</svg>

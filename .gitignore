@@ -1,0 +1,8 @@
+node_modules/
+dist/
+deep-graph.json
+*.log
+.DS_Store
+.mcp.json
+.vscode/
+/examples

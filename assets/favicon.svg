@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Background -->
+  <rect width="64" height="64" rx="12" fill="#0A0A0A"/>
+
+  <g transform="translate(4, 8)">
+    <!-- Opening curly brace -->
+    <text x="0" y="38" fill="#F59E0B" font-family="monospace" font-size="40" font-weight="200" opacity="0.85">{</text>
+
+    <!-- Source node -->
+    <circle cx="24" cy="24" r="3.5" fill="#F59E0B"/>
+
+    <!-- Level 1 -->
+    <line x1="27" y1="22" x2="34" y2="15" stroke="#F59E0B" stroke-width="1.5" opacity="0.65"/>
+    <circle cx="36" cy="13" r="2.5" fill="#F59E0B" opacity="0.65"/>
+
+    <line x1="27" y1="24" x2="36" y2="24" stroke="#F59E0B" stroke-width="1.5" opacity="0.55"/>
+    <circle cx="38" cy="24" r="2" fill="#F59E0B" opacity="0.55"/>
+
+    <line x1="27" y1="26" x2="34" y2="33" stroke="#F59E0B" stroke-width="1.5" opacity="0.65"/>
+    <circle cx="36" cy="35" r="2.5" fill="#F59E0B" opacity="0.65"/>
+
+    <!-- Level 2 -->
+    <line x1="38" y1="12" x2="44" y2="8" stroke="#F59E0B" stroke-width="1" opacity="0.35"/>
+    <circle cx="46" cy="7" r="1.5" fill="#F59E0B" opacity="0.35"/>
+
+    <line x1="38" y1="34" x2="44" y2="40" stroke="#F59E0B" stroke-width="1" opacity="0.35"/>
+    <circle cx="46" cy="41" r="1.5" fill="#F59E0B" opacity="0.35"/>
+
+    <!-- Closing curly brace -->
+    <text x="42" y="38" fill="#F59E0B" font-family="monospace" font-size="40" font-weight="200" opacity="0.85">}</text>
+  </g>
+</svg>
