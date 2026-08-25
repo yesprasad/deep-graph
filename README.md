@@ -156,72 +156,85 @@ comment.
 
 #### Example: Supabase PR impact and API graph
 
-We ran `pr-check` against [Supabase PR #49451](https://github.com/supabase/supabase/pull/49451)
-with the repository's OpenAPI specs discovered automatically. The PR changed
-one TypeScript file, produced four direct downstream module impacts, and made
-no OpenAPI contract changes:
+We ran `pr-check` against [Supabase PR #35240](https://github.com/supabase/supabase/pull/35240),
+a real Studio/GraphQL change that updates 31 files, including application
+TypeScript, React components, tests, configuration, and CI. Deep-Graph focused
+on the `apps/studio` TypeScript project and found direct and transitive
+consumers of the changed modules:
 
 ```text
-Changed:  apps/design-system/registry/schema.ts
-Impacted: 4 modules
+Changed:  10 TypeScript/TSX files in the Studio scope
+Impacted: 11 direct and transitive modules
 Breaking API changes: 0
-Risk: LOW
+Risk: MEDIUM
 ```
 
-The same checkout contains six OpenAPI documents. Deep-Graph extracted 372
-operations, 208 schemas, and 1,975 schema fields, producing a 27,120-node and
-32,192-edge combined graph with 11 framework and 28 inferred code bridges. The
+Across the Studio code and five Supabase OpenAPI documents, Deep-Graph extracted
+213 operations, 160 schemas, and 1,155 schema fields, producing a 7,788-node and
+16,127-edge combined graph with 22 inferred TypeScript-to-API bridges. The
 diagram below is a readable excerpt of that graph—not the full graph—and shows
-both the PR blast radius and API consumers:
+changed modules, direct consumers, transitive consumers, and API type bridges:
 
 ```mermaid
 flowchart LR
-  subgraph PR[Supabase PR #49451]
-    Schema["apps/design-system/registry/schema.ts"]
-    Charts["registry/charts.ts"]
-    Copy["registry/copy-writing.ts"]
-    Examples["registry/examples.ts"]
-    Build["scripts/build-registry.mts"]
+  subgraph PR[Supabase PR #35240 · Studio blast radius]
+    GraphiQL["GraphiQL.tsx"]
+    GraphiQLTab["GraphiQLTab.tsx"]
+    Download["DownloadResultsButton.tsx"]
+    Linter["LinterFilters.tsx"]
+    QueryBar["QueryPerformanceFilterBar.tsx"]
+    Utility["UtilityPanel.tsx"]
+    QueryPerf["QueryPerformance.tsx"]
+    SQLEditor["SQLEditor.tsx"]
+    PerfPage["advisors/query-performance.tsx"]
+    SqlPage["sql/[id].tsx"]
 
-    Schema -->|imports| Charts
-    Schema -->|imports| Copy
-    Schema -->|imports| Examples
-    Schema -->|imports| Build
+    GraphiQL -->|imports · depth 1| GraphiQLTab
+    Download -->|imports · depth 1| Linter
+    Download -->|imports · depth 1| QueryBar
+    Download -->|imports · depth 1| Utility
+    QueryBar -->|transitive · depth 2| QueryPerf
+    Utility -->|transitive · depth 2| SQLEditor
+    QueryPerf -->|transitive · depth 3| PerfPage
+    SQLEditor -->|transitive · depth 3| SqlPage
   end
 
-  subgraph API[Supabase API contract excerpt]
-    QueryHook["use-run-query.ts::runQuery"]
-    QueryRoute["ai/sql/route.ts::getDbSchema"]
-    QueryEndpoint["POST /v1/projects/{ref}/database/query"]
-    QueryBody["V1RunQueryBody"]
-    QueryField["V1RunQueryBody.query"]
-    ProjectsEndpoint["POST /v1/projects"]
-    CreateBody["V1CreateProjectBody"]
-    ProjectResponse["V1ProjectResponse"]
+  subgraph API[Supabase API contract bridges]
+    ProviderTS["AuthProvidersForm.types.ts::Provider"]
+    ProviderAPI["OpenAPI::Provider"]
+    AuthTS["auth-config-query.ts::AuthConfigResponse"]
+    AuthAPI["OpenAPI::AuthConfigResponse"]
+    ReleaseTS["project-create-mutation.ts::ReleaseChannel"]
+    ReleaseAPI["OpenAPI::ReleaseChannel"]
 
-    QueryHook -->|consumes · framework| QueryEndpoint
-    QueryRoute -->|consumes · framework| QueryEndpoint
-    QueryEndpoint -->|request| QueryBody
-    QueryBody -->|contains| QueryField
-    ProjectsEndpoint -->|request| CreateBody
-    ProjectsEndpoint -->|response| ProjectResponse
+    ProviderTS -.->|api_implements · inferred name match| ProviderAPI
+    AuthTS -.->|api_implements · inferred name match| AuthAPI
+    ReleaseTS -.->|api_implements · inferred name match| ReleaseAPI
   end
 
   classDef changed fill:#fff3cd,stroke:#d39e00,color:#111;
   classDef impacted fill:#e8f5e9,stroke:#43a047,color:#111;
   classDef contract fill:#e3f2fd,stroke:#1e88e5,color:#111;
-  class Schema changed;
-  class Charts,Copy,Examples,Build impacted;
-  class QueryHook,QueryRoute,QueryEndpoint,QueryBody,QueryField,ProjectsEndpoint,CreateBody,ProjectResponse contract;
+  class GraphiQL,Download changed;
+  class GraphiQLTab,Linter,QueryBar,Utility,QueryPerf,SQLEditor,PerfPage,SqlPage impacted;
+  class ProviderTS,ProviderAPI,AuthTS,AuthAPI,ReleaseTS,ReleaseAPI contract;
 ```
 
 Run the same analysis locally with:
 
 ```bash
-deep-graph pr-check --base origin/master --dir ./supabase --format json
+deep-graph pr-check \
+  --base e99725ccf59fb8dd7dd46cd3630e6a25e8c0b384 \
+  --dir ./supabase/apps/studio \
+  --openapi ./supabase/apps/docs/spec/analytics_v0_openapi.json \
+  --openapi ./supabase/apps/docs/spec/api_v1_openapi.json \
+  --openapi ./supabase/apps/docs/spec/auth_v1_openapi.json \
+  --openapi ./supabase/apps/docs/spec/functions_v0_openapi.json \
+  --openapi ./supabase/apps/docs/spec/storage_v0_openapi.json \
+  --format json
 ```
 
-The Supabase OpenAPI source used for the contract excerpt is
+The Supabase OpenAPI source used for the contract bridges is
 [`apps/docs/spec/api_v1_openapi.json`](https://github.com/supabase/supabase/blob/master/apps/docs/spec/api_v1_openapi.json).
 
 ---
