@@ -18,7 +18,7 @@ import type { DependencyGraph, GraphNode, GraphEdge } from '../types/graph';
  * string matching would miss.
  */
 
-interface ImpactRecord {
+export interface ImpactRecord {
   name: string;
   type: string;
   file: string;
@@ -36,10 +36,64 @@ interface BlastResult {
  * Find the target node by name — could be a file path, symbol name,
  * or qualified name (file::symbol).
  */
-function resolveTarget(
+/**
+ * Resolve a target expressed in OpenAPI terms.
+ *
+ * Accepts the canonical prefixed forms as well as the bare names, and is
+ * deliberately forgiving about which prefix was used — `api_schema:X.y`
+ * names a property, and asking for it should not be an error.
+ */
+export function resolveApiTarget(
   graph: DependencyGraph,
   target: string
 ): GraphNode | null {
+  const trimmed = target.trim();
+  const prefixed = trimmed.match(/^(api_service|api_operation|api_schema|api_property):(.+)$/);
+  const bare = prefixed ? prefixed[2].trim() : trimmed;
+
+  // `api_operation:POST:/login` -> `POST /login`
+  const asOperation = bare.replace(/^([A-Za-z]+):(\/.*)$/, '$1 $2');
+  const operation = graph.nodes.find(
+    n => n.type === 'api_operation' &&
+      n.name.toLowerCase() === asOperation.toLowerCase()
+  );
+  if (operation) return operation;
+
+  // A dotted name is a property; anything else is a schema or service.
+  const wanted: Array<GraphNode['type']> = bare.includes('.')
+    ? ['api_property', 'api_schema', 'api_service']
+    : ['api_schema', 'api_service', 'api_property'];
+
+  for (const type of wanted) {
+    const match = graph.nodes.find(n => n.type === type && n.name === bare);
+    if (match) return match;
+  }
+
+  // Case-insensitive last resort, still scoped to API nodes.
+  const lowered = bare.toLowerCase();
+  return (
+    graph.nodes.find(
+      n =>
+        (n.type === 'api_property' ||
+          n.type === 'api_schema' ||
+          n.type === 'api_operation' ||
+          n.type === 'api_service') &&
+        n.name.toLowerCase() === lowered
+    ) ?? null
+  );
+}
+
+export function resolveTarget(
+  graph: DependencyGraph,
+  target: string
+): GraphNode | null {
+  // API targets are checked first when the target is explicitly prefixed,
+  // so `api_schema:User` can never be shadowed by a TypeScript `User`.
+  if (/^api_(service|operation|schema|property):/.test(target.trim())) {
+    const api = resolveApiTarget(graph, target);
+    if (api) return api;
+  }
+
   // Try exact match on name
   let node = graph.nodes.find(n => n.name === target);
   if (node) return node;
@@ -67,7 +121,9 @@ function resolveTarget(
   );
   if (node) return node;
 
-  return null;
+  // Unprefixed API forms — "POST /login", "LoginSuccess.auth" — resolve
+  // last so TypeScript symbols keep priority on a bare name.
+  return resolveApiTarget(graph, target);
 }
 
 /**
@@ -75,14 +131,18 @@ function resolveTarget(
  * Walks backward through edges to find everything that depends
  * on the target, directly or transitively.
  */
-function reverseTraverse(
+export function reverseTraverse(
   graph: DependencyGraph,
   targetId: string,
   maxDepth: number
 ): ImpactRecord[] {
   const impacted: ImpactRecord[] = [];
   const visited = new Set<string>();
-  const queue: Array<{ nodeId: string; depth: number }> = [];
+  // The connecting edge travels with the queue entry. Looking it up later
+  // only works for direct dependents, which left every deeper node
+  // labelled "transitive dependency" — discarding exactly the detail that
+  // makes a long chain readable.
+  const queue: Array<{ nodeId: string; depth: number; via?: GraphEdge }> = [];
 
   // Seed: find all nodes that directly depend on the target
   // For modules: who imports this file?
@@ -111,22 +171,19 @@ function reverseTraverse(
 
   for (const edge of graph.edges) {
     if (targetIds.has(edge.to) && !visited.has(edge.from)) {
-      queue.push({ nodeId: edge.from, depth: 1 });
+      queue.push({ nodeId: edge.from, depth: 1, via: edge });
       visited.add(edge.from);
     }
   }
 
   // BFS with depth limit
   while (queue.length > 0) {
-    const { nodeId, depth } = queue.shift()!;
+    const { nodeId, depth, via } = queue.shift()!;
 
     const node = graph.nodes.find(n => n.id === nodeId);
     if (!node) continue;
 
-    // Find the edge that connects this node to the target (for the reason)
-    const connectingEdge = graph.edges.find(
-      e => e.from === nodeId && targetIds.has(e.to)
-    );
+    const connectingEdge = via;
 
     // Determine the reason for impact
     let reason: string;
@@ -152,6 +209,32 @@ function reverseTraverse(
           break;
         case 'composition':
           reason = 'contains symbol';
+          break;
+        case 'api_serves':
+          reason = 'serves endpoint';
+          break;
+        case 'api_request':
+          reason = 'accepts as request body';
+          break;
+        case 'api_response':
+          reason = `returns${connectingEdge.via ? ` (${connectingEdge.via})` : ''}`;
+          break;
+        case 'api_parameter':
+          reason = `parameter ${connectingEdge.via || ''}`.trim();
+          break;
+        case 'api_contains':
+          reason = `declares field ${connectingEdge.via || ''}`.trim();
+          break;
+        case 'api_ref':
+          reason = `references via ${connectingEdge.via || '$ref'}`;
+          break;
+        // Bridge edges carry how the link was established, because an
+        // inferred name match is not the same claim as an annotation.
+        case 'api_implements':
+          reason = `implements endpoint [${connectingEdge.confidence ?? 'unknown'}]`;
+          break;
+        case 'api_consumes':
+          reason = `calls endpoint [${connectingEdge.confidence ?? 'unknown'}]`;
           break;
         default:
           reason = connectingEdge.type;
@@ -181,7 +264,7 @@ function reverseTraverse(
 
         for (const edge of graph.edges) {
           if (edge.to === parentEdge.from && !visited.has(edge.from)) {
-            queue.push({ nodeId: edge.from, depth: depth + 1 });
+            queue.push({ nodeId: edge.from, depth: depth + 1, via: edge });
             visited.add(edge.from);
           }
         }
@@ -190,7 +273,7 @@ function reverseTraverse(
       // Also find anything that depends on this node
       for (const edge of graph.edges) {
         if (edge.to === nodeId && !visited.has(edge.from)) {
-          queue.push({ nodeId: edge.from, depth: depth + 1 });
+          queue.push({ nodeId: edge.from, depth: depth + 1, via: edge });
           visited.add(edge.from);
         }
       }
@@ -308,6 +391,10 @@ export function runBlast(
             : r.type === 'class' ? '🏗️'
             : r.type === 'interface' ? '📐'
             : r.type === 'external_package' ? '📦'
+            : r.type === 'api_operation' ? '🌐'
+            : r.type === 'api_schema' ? '📋'
+            : r.type === 'api_property' ? '🔑'
+            : r.type === 'api_service' ? '🛰️'
             : '';
 
           table.push([

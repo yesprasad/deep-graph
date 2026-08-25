@@ -21,34 +21,50 @@ interface PrBlastResult {
 }
 
 function getChangedFiles(base: string, projectRoot: string): string[] {
+  // Determine the project's path relative to the git repo root
+  // so we can strip it from diff output (git always returns repo-relative paths)
+  let repoRelativePrefix = '';
+  try {
+    const repoRoot = execSync('git rev-parse --show-toplevel', {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    }).trim();
+    const absProjectRoot = path.resolve(projectRoot);
+    if (absProjectRoot !== repoRoot) {
+      repoRelativePrefix = absProjectRoot.slice(repoRoot.length + 1) + '/';
+    }
+  } catch {
+    // If we can't determine the prefix, proceed without stripping
+  }
+
+  function stripAndFilter(raw: string): string[] {
+    if (!raw) return [];
+    return raw
+      .split('\n')
+      .filter(f => /\.(ts|tsx)$/.test(f))
+      .filter(f => !f.includes('node_modules'))
+      .filter(f => !f.endsWith('.d.ts'))
+      .map(f => repoRelativePrefix && f.startsWith(repoRelativePrefix)
+        ? f.slice(repoRelativePrefix.length)
+        : f
+      );
+  }
+
   try {
     const raw = execSync(`git diff --name-only --diff-filter=ACMR ${base}...HEAD`, {
       cwd: projectRoot,
       encoding: 'utf-8',
     }).trim();
 
-    if (!raw) return [];
-
-    return raw
-      .split('\n')
-      .filter(f => /\.(ts|tsx)$/.test(f))
-      .filter(f => !f.includes('node_modules'))
-      .filter(f => !f.endsWith('.d.ts'));
+    return stripAndFilter(raw);
   } catch {
-    // Fallback: try without the triple-dot (no common ancestor)
     try {
       const raw = execSync(`git diff --name-only --diff-filter=ACMR ${base} HEAD`, {
         cwd: projectRoot,
         encoding: 'utf-8',
       }).trim();
 
-      if (!raw) return [];
-
-      return raw
-        .split('\n')
-        .filter(f => /\.(ts|tsx)$/.test(f))
-        .filter(f => !f.includes('node_modules'))
-        .filter(f => !f.endsWith('.d.ts'));
+      return stripAndFilter(raw);
     } catch {
       return [];
     }
@@ -57,7 +73,8 @@ function getChangedFiles(base: string, projectRoot: string): string[] {
 
 function resolveTarget(
   graph: DependencyGraph,
-  filePath: string
+  filePath: string,
+  repoRoot?: string
 ): GraphNode | null {
   // Try matching as a module node
   let node = graph.nodes.find(
@@ -67,7 +84,51 @@ function resolveTarget(
         n.source.file === filePath ||
         n.name.endsWith(`/${filePath}`))
   );
-  return node || null;
+  if (node) return node;
+
+  // Try matching as an external_package (workspace dependency in monorepo)
+  // e.g. filePath "packages/validation/api.ts" → "@repo/validation/api"
+  if (repoRoot) {
+    const absFile = path.resolve(repoRoot, filePath);
+    const parts = filePath.split('/');
+    // Walk up the path to find a package.json
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const pkgDir = path.resolve(repoRoot, parts.slice(0, i).join('/'));
+      const pkgJsonPath = path.join(pkgDir, 'package.json');
+      try {
+        const pkgJson = JSON.parse(
+          require('fs').readFileSync(pkgJsonPath, 'utf-8')
+        );
+        if (pkgJson.name) {
+          // Compute the subpath: file path relative to package dir, without extension
+          const relToPackage = path.relative(pkgDir, absFile)
+            .replace(/\.(ts|tsx)$/, '')
+            .replace(/\/index$/, '');
+          const specifier = relToPackage === 'index' || relToPackage === ''
+            ? pkgJson.name
+            : `${pkgJson.name}/${relToPackage}`;
+          // Match against external_package nodes
+          node = graph.nodes.find(
+            n => n.type === 'external_package' && n.name === specifier
+          );
+          if (node) return node;
+          // Also try without src/ prefix in subpath
+          if (relToPackage.startsWith('src/')) {
+            const withoutSrc = `${pkgJson.name}/${relToPackage.slice(4)}`;
+            node = graph.nodes.find(
+              n => n.type === 'external_package' && n.name === withoutSrc
+            );
+            if (node) return node;
+          }
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return null;
 }
 
 function reverseTraverse(
@@ -191,13 +252,22 @@ export function runBlastPr(
     return;
   }
 
+  // Determine repo root for workspace package resolution
+  let repoRoot: string | undefined;
+  try {
+    repoRoot = execSync('git rev-parse --show-toplevel', {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    }).trim();
+  } catch {}
+
   // Run blast on each changed file, collect all impacts
   const allImpacts: PrImpactRecord[] = [];
   const resolvedFiles: string[] = [];
   const unresolvedFiles: string[] = [];
 
   for (const file of changedFiles) {
-    const target = resolveTarget(graph, file);
+    const target = resolveTarget(graph, file, repoRoot);
     if (target) {
       resolvedFiles.push(file);
       const impacts = reverseTraverse(graph, target.id, maxDepth, file);

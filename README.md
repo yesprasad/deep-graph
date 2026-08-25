@@ -136,6 +136,105 @@ Runs blast radius on every TypeScript file changed in your current branch (relat
 
 ---
 
+### `api-diff` — What did we stop promising, and who was relying on it?
+
+```bash
+deep-graph api-diff --openapi openapi.json
+deep-graph api-diff --openapi openapi.json --base origin/main --fail-on-breaking
+deep-graph api-diff --openapi openapi.json --no-consumers --format json
+```
+
+Compares an OpenAPI document against its base revision, classifies every change as breaking or safe, and — using the merged graph — names the code that depended on what was removed.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--openapi <path>` | Spec to diff (repeatable, or comma-separated) | — |
+| `-b, --base <revision>` | Base revision to compare against | `main` |
+| `-d, --dir <path>` | Project directory | `.` |
+| `-g, --graph <path>` | Use existing graph JSON for consumer resolution | — |
+| `--no-consumers` | Spec-only diff; no TypeScript project needed | — |
+| `-f, --format <type>` | Output format: `table`, `json` | `table` |
+| `--fail-on-breaking` | Exit `1` when a breaking change is found (for CI) | — |
+
+Breaking-ness is judged from the consumer's side, and the direction of the field decides it:
+
+| Change | Response field | Request field |
+|--------|---------------|---------------|
+| Removed | **Breaking** — readers get `undefined` | Safe — server stops requiring it |
+| Added, required | Safe | **Breaking** — callers must now send it |
+| Added, optional | Safe | Safe |
+| `required` → optional | **Breaking** — no longer guaranteed | Safe |
+| Type changed | **Breaking** | **Breaking** |
+
+---
+
+## OpenAPI / REST Support
+
+Point `--openapi` at a spec and the contract becomes part of the same graph as your code. Works with **OpenAPI 3.x and Swagger 2.0**, in JSON or YAML.
+
+```bash
+deep-graph analyze --dir . --openapi openapi.json
+```
+
+**Every schema field is its own node.** This is the difference between a report that says "`LoginSuccess` changed" and one that says "`LoginSuccess.auth` was removed, and here is exactly who reads it":
+
+```bash
+deep-graph blast 'LoginSuccess.auth'
+```
+
+```text
+LoginSuccess     api_schema      declares field auth              depth 1
+POST /login      api_operation   returns (200)                    depth 2
+GET /session     api_operation   returns (200)                    depth 2
+login            function        implements endpoint [explicit]   depth 3
+loadSession      function        calls endpoint [explicit]        depth 3
+registerRoutes   function        implements endpoint [framework]  depth 3
+```
+
+`$ref`s stay edges rather than being inlined, so a shared schema is one node and a nested field still traces back to every operation that carries it.
+
+### Linking code to the contract
+
+A bridge edge is a claim that a function and an endpoint are the same thing, and those claims vary in trustworthiness. Every bridge records how it was established, strongest first — so an inferred match can be filtered out or reviewed separately.
+
+| Confidence | Established by |
+|------------|----------------|
+| `explicit` | An `@openapi` annotation on the handler |
+| `generated` | Metadata from an OpenAPI client generator *(reserved — not yet emitted)* |
+| `framework` | A route decorator (`@Post('/login')`) or router registration (`router.post('/login', …)`) |
+| `shared_type` | A TS type generated from, or shared with, the schema |
+| `inferred` | Name match only — `User` in a spec is often not `User` in TypeScript |
+
+The strongest evidence wins: once an operation has an explicit implementation, a name heuristic will not add a competing one.
+
+**Annotations** are the reliable way to link handlers your framework hides:
+
+```ts
+/** @openapi POST /login */
+export function login(email: string, password: string) { … }
+
+/** @openapi-consumes GET /session */
+export async function loadSession() { … }
+
+/** @openapi-schema LoginSuccess */
+export interface LoginResult { … }
+```
+
+### Addressing API nodes
+
+| Form | Example |
+|------|---------|
+| Operation | `'POST /login'` or `api_operation:POST:/login` |
+| Schema | `LoginSuccess` or `api_schema:LoginSuccess` |
+| Field | `LoginSuccess.auth` or `api_property:LoginSuccess.auth` |
+| Nested field | `LoginSuccess.auth.scopes` |
+
+Prefix a target to force API resolution when a TypeScript symbol shares the name.
+
+---
+
 ## When This Succeeds
 
 `deep-graph` produces accurate, complete graphs when:
@@ -170,7 +269,13 @@ The graph captures relationships that no syntax-level tool can see:
 
 ## Limitations
 
-### Current Version (v0.1.0)
+### Current Version (v0.2.0)
+
+- **OpenAPI bridges below `explicit` are heuristics.** A `framework` bridge reads a route decorator or router call statically, and will miss a prefix applied at runtime. An `inferred` bridge is a name match and nothing more. Both are labelled in every output so they can be filtered; when a link matters, add an `@openapi` annotation and it becomes `explicit`.
+
+- **External `$ref`s are not followed.** A `$ref` pointing at another file is recorded as unresolved and reported, rather than silently dropped — those schemas are absent from the graph. Bundle the spec first (`redocly bundle`, `swagger-cli bundle`) for full coverage.
+
+- **`api-diff` compares one revision to another, not a spec to its implementation.** It reports that the contract changed and who depended on the old shape. Whether the code actually still returns the field is a question for the reviewer, not the graph.
 
 - **TypeScript and JavaScript (with tsconfig).** Pure `.ts` projects work out of the box. Mixed `.ts`/`.js` codebases work when the tsconfig has `"allowJs": true` — `.js` imports are resolved and types inferred the same way. Pure JavaScript projects without any tsconfig are not supported (add a `tsconfig.json` with `"allowJs": true` to enable analysis). The same approach generalizes to other languages with accessible type-system APIs (Java, C#, Rust), but those implementations don't exist yet.
 
@@ -378,6 +483,10 @@ The generated `deep-graph.json` contains:
 | `type_alias` | Type alias declaration |
 | `enum` | Enum declaration |
 | `external_package` | Placeholder for npm dependency |
+| `api_service` | One OpenAPI document |
+| `api_operation` | One method + path pair (`POST /login`) |
+| `api_schema` | A named schema |
+| `api_property` | A single field on a schema (`LoginSuccess.auth`) |
 
 ### Edge Types
 
@@ -389,6 +498,16 @@ The generated `deep-graph.json` contains:
 | `composition` | Module contains a symbol (parent-child) |
 | `type_reference` | Symbol references a type (future) |
 | `call` | Function or method calls another function or method, resolved through the checker |
+| `api_serves` | Service declares an operation |
+| `api_request` | Operation accepts a schema as its request body |
+| `api_response` | Operation returns a schema |
+| `api_parameter` | Operation accepts a schema via path/query/header |
+| `api_contains` | Schema declares a property (or a property nests one) |
+| `api_ref` | Schema or property references another schema (`$ref`, `allOf`, …) |
+| `api_implements` | TS symbol implements an operation — carries `confidence` |
+| `api_consumes` | TS symbol calls an operation — carries `confidence` |
+
+API edges point from the declaring thing to the declared thing (operation → schema → property), so reverse traversal walks a field back out to every implementation and consumer.
 
 ---
 
@@ -424,6 +543,9 @@ If deep-graph is installed locally (`devDependencies`), the config points to the
 | `dependencies` | Direct inbound/outbound edges for a node |
 | `unused_exports` | Dead code detection — exports nothing uses |
 | `graph_summary` | Project overview: node/edge counts, most-connected symbols |
+| `api_contract` | OpenAPI surface — operations, schemas, and every field as an addressable node |
+
+`blast_radius` accepts API targets too, so a reviewer can go from `api_contract` on a schema straight to the code that breaks if a field changes. When `openapi.json` / `swagger.json` (or the `.yaml` forms) sits at the project root, the server picks it up automatically — no extra configuration.
 
 ### Manual Configuration
 

@@ -9,7 +9,80 @@ import { writeGraph } from '../output/writer';
 import { displayGraph } from './display';
 import { runBlast } from './blast';
 import { runBlastPr } from './blast-pr';
+import { runApiDiff } from './api-diff';
+import { buildApiGraph, mergeApiGraph, standaloneApiGraph } from '../openapi';
 import type { DependencyGraph } from '../types/graph';
+
+/**
+ * Resolve `--openapi` into a list of spec files. Accepts the flag more
+ * than once, and splits comma-separated values, so a service with a spec
+ * per version can be analyzed in one pass.
+ */
+function collectSpecs(value: string, previous: string[]): string[] {
+  return previous.concat(value.split(',').map(s => s.trim()).filter(Boolean));
+}
+
+/**
+ * Build the graph for a command that accepts both `--dir` and `--openapi`.
+ *
+ * Either source alone is valid: TypeScript only (the original behavior),
+ * specs only (contract-only repositories), or both — which is where the
+ * bridge edges make blast radius cross the boundary.
+ */
+function buildGraph(
+  options: { dir?: string; openapi?: string[]; quiet?: boolean },
+  onProgress?: (message: string) => void
+): DependencyGraph {
+  const specs = options.openapi ?? [];
+  const targetDir = path.resolve(options.dir ?? '.');
+
+  // With specs present, a missing TypeScript project is not an error —
+  // a repository that holds only a contract is a valid thing to analyze.
+  let compilerState: ReturnType<typeof loadProject> | null = null;
+  try {
+    compilerState = loadProject(targetDir);
+    onProgress?.(`Project loaded: ${compilerState.sourceFiles.length} source files`);
+  } catch (error) {
+    if (specs.length === 0) throw error;
+    onProgress?.('No TypeScript project found — analyzing the contract alone');
+  }
+
+  // TypeScript first so progress reads in the order the work happens.
+  const graph = compilerState ? extractGraph(compilerState) : null;
+  if (graph) {
+    onProgress?.(
+      `Graph built: ${graph.metadata.nodeCount} nodes, ${graph.metadata.edgeCount} edges`
+    );
+  }
+
+  if (specs.length === 0) return graph!;
+
+  const api = buildApiGraph(specs, compilerState, targetDir);
+  const bridgeTotal = Object.values(api.bridges).reduce((a, b) => a + b, 0);
+  onProgress?.(
+    `API graph: ${api.operationCount} operations, ${api.schemaCount} schemas, ` +
+    `${api.propertyCount} fields` +
+    (compilerState ? `, ${bridgeTotal} bridges` : '')
+  );
+
+  warnUnresolved(api.unresolvedRefs, options.quiet);
+
+  return graph ? mergeApiGraph(graph, api) : standaloneApiGraph(api);
+}
+
+function warnUnresolved(refs: string[], quiet?: boolean): void {
+  if (quiet || refs.length === 0) return;
+  // Unresolved refs mean part of the contract is invisible to the graph.
+  // Reporting them keeps a partial spec from looking like a complete one.
+  console.log(
+    chalk.yellow(`\n⚠️  ${refs.length} unresolved $ref`) +
+    chalk.gray(` (external or missing — those schemas are not in the graph)`)
+  );
+  refs.slice(0, 5).forEach(r => console.log(chalk.gray(`     • ${r}`)));
+  if (refs.length > 5) {
+    console.log(chalk.gray(`     … and ${refs.length - 5} more`));
+  }
+}
 
 const banner = `
   ██████╗ ███████╗███████╗██████╗        ██████╗ ██████╗  █████╗ ██████╗ ██╗  ██╗
@@ -32,7 +105,7 @@ if (showBanner) {
 program
   .name('deep-graph')
   .description('Compiler-aware dependency graph extraction for TypeScript projects')
-  .version('0.1.0')
+  .version('0.2.0')
   .option('--no-banner', 'Suppress ASCII banner');
 
 // ── Analyze Command ──
@@ -41,6 +114,7 @@ program
   .description('Extract dependency graph from a TypeScript project')
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-o, --output <path>', 'Output file path', 'deep-graph.json')
+  .option('--openapi <path>', 'OpenAPI/Swagger document to include (repeatable)', collectSpecs, [])
   .option('-q, --quiet', 'Suppress console output')
   .option('--no-display', 'Skip visual display')
   .action(async (options) => {
@@ -49,33 +123,18 @@ program
     try {
       const targetDir = path.resolve(options.dir);
 
-      // Step 1: Load the TypeScript project
       if (!options.quiet) {
-        spinner = ora('Loading TypeScript project...').start();
+        spinner = ora('Loading project...').start();
       }
 
-      const compilerState = loadProject(targetDir);
+      const graph = buildGraph(options, message => {
+        if (spinner) {
+          spinner.succeed(message);
+          spinner = options.quiet ? undefined : ora('Working...').start();
+        }
+      });
 
-      if (spinner) {
-        spinner.succeed(
-          `Project loaded: ${chalk.cyan(compilerState.sourceFiles.length)} source files ` +
-          `(TypeScript ${chalk.gray(compilerState.tsVersion)})`
-        );
-      }
-
-      // Step 2: Extract the graph
-      if (!options.quiet) {
-        spinner = ora('Extracting dependency graph...').start();
-      }
-
-      const graph = extractGraph(compilerState);
-
-      if (spinner) {
-        spinner.succeed(
-          `Graph built: ${chalk.cyan(graph.metadata.nodeCount)} nodes, ` +
-          `${chalk.cyan(graph.metadata.edgeCount)} edges`
-        );
-      }
+      if (spinner) spinner.stop();
 
       // Step 3: Write output
       const outputPath = path.isAbsolute(options.output)
@@ -90,6 +149,26 @@ program
         console.log(chalk.gray('   Density:      ') +
           chalk.cyan((graph.metadata.edgeCount / graph.metadata.nodeCount).toFixed(2)) +
           chalk.gray(' edges/node'));
+
+        const api = graph.metadata.api;
+        if (api) {
+          console.log(chalk.gray('   API surface:  ') +
+            chalk.cyan(api.operationCount) + chalk.gray(' operations, ') +
+            chalk.cyan(api.schemaCount) + chalk.gray(' schemas, ') +
+            chalk.cyan(api.propertyCount) + chalk.gray(' fields'));
+
+          const bridges = Object.entries(api.bridges).filter(([, n]) => n > 0);
+          if (bridges.length > 0) {
+            // Confidence is shown per tier, not summed: an inferred name
+            // match and a maintained annotation are not the same evidence.
+            console.log(chalk.gray('   Code bridges: ') +
+              bridges
+                .map(([tier, n]) =>
+                  (tier === 'inferred' ? chalk.yellow : chalk.cyan)(`${n} ${tier}`)
+                )
+                .join(chalk.gray(', ')));
+          }
+        }
       }
 
       // Step 4: Display
@@ -118,6 +197,7 @@ program
   .argument('<target>', 'Target file path or symbol name')
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-g, --graph <path>', 'Path to existing graph JSON (skips extraction)')
+  .option('--openapi <path>', 'OpenAPI/Swagger document to include (repeatable)', collectSpecs, [])
   .option('-f, --format <type>', 'Output format: table, json, csv', 'table')
   .option('--depth <n>', 'Max traversal depth', '5')
   .action(async (target: string, options) => {
@@ -139,22 +219,14 @@ program
 
         graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
       } else {
-        // Extract fresh graph
-        const targetDir = path.resolve(options.dir);
-
-        if (!options.quiet) {
-          spinner = ora('Loading TypeScript project...').start();
-        }
-
-        const compilerState = loadProject(targetDir);
-        if (spinner) spinner.succeed(`Project loaded: ${chalk.cyan(compilerState.sourceFiles.length)} source files`);
-
-        if (!options.quiet) {
-          spinner = ora('Extracting dependency graph...').start();
-        }
-
-        graph = extractGraph(compilerState);
-        if (spinner) spinner.succeed(`Graph built: ${chalk.cyan(graph.metadata.nodeCount)} nodes, ${chalk.cyan(graph.metadata.edgeCount)} edges`);
+        spinner = ora('Loading project...').start();
+        graph = buildGraph(options, message => {
+          if (spinner) {
+            spinner.succeed(message);
+            spinner = ora('Working...').start();
+          }
+        });
+        if (spinner) spinner.stop();
       }
 
       runBlast(graph, target, {
@@ -177,6 +249,7 @@ program
   .option('-b, --base <branch>', 'Base branch to diff against', 'main')
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-g, --graph <path>', 'Path to existing graph JSON (skips extraction)')
+  .option('--openapi <path>', 'OpenAPI/Swagger document to include (repeatable)', collectSpecs, [])
   .option('-f, --format <type>', 'Output format: table, json, csv', 'table')
   .option('--depth <n>', 'Max traversal depth', '5')
   .action(async (options) => {
@@ -197,15 +270,14 @@ program
 
         graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
       } else {
-        const targetDir = path.resolve(options.dir);
-
-        spinner = ora('Loading TypeScript project...').start();
-        const compilerState = loadProject(targetDir);
-        spinner.succeed(`Project loaded: ${chalk.cyan(compilerState.sourceFiles.length)} source files`);
-
-        spinner = ora('Extracting dependency graph...').start();
-        graph = extractGraph(compilerState);
-        spinner.succeed(`Graph built: ${chalk.cyan(graph.metadata.nodeCount)} nodes, ${chalk.cyan(graph.metadata.edgeCount)} edges`);
+        spinner = ora('Loading project...').start();
+        graph = buildGraph(options, message => {
+          if (spinner) {
+            spinner.succeed(message);
+            spinner = ora('Working...').start();
+          }
+        });
+        if (spinner) spinner.stop();
       }
 
       runBlastPr(graph, {
@@ -213,6 +285,98 @@ program
         dir: path.resolve(options.dir),
         format: options.format,
         depth: parseInt(options.depth, 10),
+      });
+    } catch (error: unknown) {
+      if (spinner) spinner.fail();
+      if (error instanceof Error) {
+        console.error(chalk.red('\n❌ Error:'), error.message);
+      }
+      process.exit(1);
+    }
+  });
+
+// ── API Diff Command ──
+program
+  .command('api-diff')
+  .description('Compare an OpenAPI document against its base revision and report breaking changes')
+  .option('--openapi <path>', 'OpenAPI/Swagger document (repeatable)', collectSpecs, [])
+  .option('-b, --base <revision>', 'Base revision to diff against', 'main')
+  .option('-d, --dir <path>', 'Target project directory', '.')
+  .option('-g, --graph <path>', 'Existing graph JSON, used to resolve affected consumers')
+  .option('--no-consumers', 'Skip consumer resolution (spec-only diff, no TypeScript needed)')
+  .option('-f, --format <type>', 'Output format: table, json', 'table')
+  .option('--fail-on-breaking', 'Exit non-zero when a breaking change is found')
+  .action(async (options) => {
+    let spinner: ora.Ora | undefined;
+
+    try {
+      if (options.openapi.length === 0) {
+        console.error(chalk.red('\n❌ api-diff needs at least one --openapi <path>'));
+        process.exit(1);
+      }
+
+      // Graph building is only needed to answer "who depends on this",
+      // and is deferred to a callback because the diff needs it for two
+      // different spec sets — the current one and the base revision's.
+      let buildForSpecs:
+        | ((specPaths: string[]) => DependencyGraph | null)
+        | null = null;
+
+      if (options.consumers !== false) {
+        if (options.graph) {
+          const graphPath = path.isAbsolute(options.graph)
+            ? options.graph
+            : path.join(process.cwd(), options.graph);
+
+          if (!fs.existsSync(graphPath)) {
+            console.error(chalk.red(`\n❌ Graph file not found: ${graphPath}`));
+            process.exit(1);
+          }
+          // A supplied graph reflects the current spec only, so removed
+          // fields will not resolve consumers from it.
+          const supplied: DependencyGraph = JSON.parse(
+            fs.readFileSync(graphPath, 'utf-8')
+          );
+          buildForSpecs = () => supplied;
+        } else {
+          spinner = ora('Building graph for consumer resolution...').start();
+          const cache = new Map<string, DependencyGraph | null>();
+
+          buildForSpecs = (specPaths: string[]) => {
+            const key = specPaths.join('|');
+            if (cache.has(key)) return cache.get(key)!;
+
+            let built: DependencyGraph | null = null;
+            try {
+              built = buildGraph({
+                dir: options.dir,
+                openapi: specPaths,
+                quiet: true,
+              });
+            } catch {
+              // A spec-only repository is a legitimate case — report the
+              // contract change without the consumer half.
+              built = null;
+            }
+            cache.set(key, built);
+            return built;
+          };
+
+          const probe = buildForSpecs(options.openapi);
+          if (probe) {
+            spinner.succeed(`Graph built: ${chalk.cyan(probe.metadata.nodeCount)} nodes`);
+          } else {
+            spinner.warn('No TypeScript project found — reporting contract changes only');
+          }
+        }
+      }
+
+      runApiDiff(options.openapi, {
+        base: options.base,
+        dir: path.resolve(options.dir),
+        format: options.format,
+        buildGraph: buildForSpecs,
+        failOnBreaking: options.failOnBreaking,
       });
     } catch (error: unknown) {
       if (spinner) spinner.fail();

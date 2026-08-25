@@ -5,6 +5,11 @@ import path from 'path';
 import fs from 'fs';
 import { loadProject } from '../compiler/loader';
 import { extractGraph } from '../extractor';
+// Shared with the CLI on purpose: two copies of blast traversal drift,
+// and the MCP server silently losing API-node support is exactly the
+// class of duplicated-contract bug deep-graph exists to surface.
+import { resolveTarget, reverseTraverse } from '../cli/blast';
+import { buildApiGraph, mergeApiGraph } from '../openapi';
 import type { DependencyGraph, GraphNode } from '../types/graph';
 
 let cachedGraph: DependencyGraph | null = null;
@@ -25,127 +30,41 @@ function getGraph(projectDir?: string): DependencyGraph {
   }
 
   const state = loadProject(targetDir);
-  cachedGraph = extractGraph(state);
+  let graph = extractGraph(state);
+
+  // Fold in an API document sitting at the project root, if there is one.
+  // An AI reviewer asking about a schema field should get the contract
+  // surface without the caller having had to name the spec first.
+  const specs = discoverSpecs(targetDir);
+  if (specs.length > 0) {
+    try {
+      graph = mergeApiGraph(graph, buildApiGraph(specs, state, targetDir));
+    } catch {
+      // A malformed spec must not take down the TypeScript graph — the
+      // caller asked about code, and that answer is still available.
+    }
+  }
+
+  cachedGraph = graph;
   cachedProjectRoot = targetDir;
   return cachedGraph;
 }
 
-function reverseTraverse(
-  graph: DependencyGraph,
-  targetId: string,
-  maxDepth: number
-): Array<{ name: string; type: string; file: string; reason: string; depth: number }> {
-  const impacted: Array<{ name: string; type: string; file: string; reason: string; depth: number }> = [];
-  const visited = new Set<string>();
-  const queue: Array<{ nodeId: string; depth: number }> = [];
+/** Conventional spec filenames at a project root. */
+const SPEC_NAMES = [
+  'openapi.json', 'openapi.yaml', 'openapi.yml',
+  'swagger.json', 'swagger.yaml', 'swagger.yml',
+];
 
-  visited.add(targetId);
-
-  const childIds = new Set<string>();
-  const frontier = [targetId];
-  while (frontier.length > 0) {
-    const current = frontier.pop()!;
-    for (const edge of graph.edges) {
-      if (edge.from === current && edge.type === 'composition' && !childIds.has(edge.to)) {
-        childIds.add(edge.to);
-        visited.add(edge.to);
-        frontier.push(edge.to);
-      }
-    }
-  }
-
-  const targetIds = new Set([targetId, ...childIds]);
-
-  for (const edge of graph.edges) {
-    if (targetIds.has(edge.to) && !visited.has(edge.from)) {
-      queue.push({ nodeId: edge.from, depth: 1 });
-      visited.add(edge.from);
-    }
-  }
-
-  while (queue.length > 0) {
-    const { nodeId, depth } = queue.shift()!;
-    const node = graph.nodes.find(n => n.id === nodeId);
-    if (!node) continue;
-
-    const connectingEdge = graph.edges.find(
-      e => e.from === nodeId && targetIds.has(e.to)
-    );
-
-    let reason = 'transitive dependency';
-    if (connectingEdge) {
-      switch (connectingEdge.type) {
-        case 'import': reason = `imports via ${connectingEdge.via || 'direct'}`; break;
-        case 'call': reason = `calls ${connectingEdge.via || 'function'}`; break;
-        case 'depends_on': reason = `depends on ${connectingEdge.via || 'parameter'}`; break;
-        case 'extends': reason = `extends ${connectingEdge.via || 'class'}`; break;
-        case 'implements': reason = `implements ${connectingEdge.via || 'interface'}`; break;
-        case 'type_reference': reason = `references type ${connectingEdge.via || ''}`; break;
-        case 'composition': reason = 'contains symbol'; break;
-        default: reason = connectingEdge.type;
-      }
-    }
-
-    impacted.push({
-      name: node.name,
-      type: node.type,
-      file: node.source.file,
-      reason,
-      depth,
-    });
-
-    if (depth < maxDepth) {
-      const parentEdge = graph.edges.find(
-        e => e.to === nodeId && e.type === 'composition'
-      );
-      if (parentEdge && !visited.has(parentEdge.from)) {
-        visited.add(parentEdge.from);
-        for (const edge of graph.edges) {
-          if (edge.to === parentEdge.from && !visited.has(edge.from)) {
-            queue.push({ nodeId: edge.from, depth: depth + 1 });
-            visited.add(edge.from);
-          }
-        }
-      }
-
-      for (const edge of graph.edges) {
-        if (edge.to === nodeId && !visited.has(edge.from)) {
-          queue.push({ nodeId: edge.from, depth: depth + 1 });
-          visited.add(edge.from);
-        }
-      }
-    }
-  }
-
-  return impacted;
-}
-
-function resolveTarget(graph: DependencyGraph, target: string): GraphNode | null {
-  let node = graph.nodes.find(n => n.name === target);
-  if (node) return node;
-
-  node = graph.nodes.find(
-    n => n.type === 'module' &&
-      (n.name === target ||
-        n.name === `src/${target}` ||
-        n.name.endsWith(`/${target}`) ||
-        n.name.endsWith(`${target}.ts`) ||
-        n.name.endsWith(`${target}.tsx`))
-  );
-  if (node) return node;
-
-  node = graph.nodes.find(n => n.qualifiedName === target);
-  if (node) return node;
-
-  node = graph.nodes.find(
-    n => n.type !== 'module' && n.type !== 'external_package' && n.name === target
-  );
-  return node || null;
+function discoverSpecs(dir: string): string[] {
+  return SPEC_NAMES
+    .map(name => path.join(dir, name))
+    .filter(file => fs.existsSync(file));
 }
 
 const server = new McpServer({
   name: 'deep-graph',
-  version: '0.1.0',
+  version: '0.2.0',
 }, {
   capabilities: {
     tools: {},
@@ -356,6 +275,104 @@ server.tool(
             total_edges: graph.metadata.edgeCount,
             edge_types: edgeTypes,
             most_depended_on: topNodes,
+          }, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  'api_contract',
+  'Inspect the OpenAPI contract surface: operations, schemas, and every schema field as its own addressable node. ' +
+  'Use this to answer "what does this endpoint return", "which endpoints carry this schema", or "what fields does this schema declare". ' +
+  'Field names are addressable as "Schema.field" and can be passed straight to blast_radius to find the code that breaks if the field changes.',
+  {
+    subject: z.string().optional().describe(
+      'Operation ("POST /login"), schema ("LoginSuccess"), or field ("LoginSuccess.auth"). Omit to list the whole surface.'
+    ),
+    project_dir: z.string().optional().describe('Project directory (defaults to cwd)'),
+  },
+  async ({ subject, project_dir }) => {
+    try {
+      const graph = getGraph(project_dir);
+      const apiNodes = graph.nodes.filter(n => n.type.startsWith('api_'));
+
+      if (apiNodes.length === 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'No OpenAPI contract in this graph.',
+              hint: 'Run: deep-graph analyze --openapi <spec.json>, or place openapi.json / swagger.json at the project root.',
+            }, null, 2),
+          }],
+        };
+      }
+
+      if (!subject) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              services: apiNodes.filter(n => n.type === 'api_service').map(n => n.name),
+              operations: apiNodes
+                .filter(n => n.type === 'api_operation')
+                .map(n => ({ name: n.name, operationId: n.attributes.operationId })),
+              schemas: apiNodes.filter(n => n.type === 'api_schema').map(n => n.name),
+              field_count: apiNodes.filter(n => n.type === 'api_property').length,
+            }, null, 2),
+          }],
+        };
+      }
+
+      const node = resolveTarget(graph, subject);
+      if (!node || !node.type.startsWith('api_')) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: `"${subject}" is not part of the API contract.`,
+              available: apiNodes.slice(0, 30).map(n => n.name),
+            }, null, 2),
+          }],
+        };
+      }
+
+      // What this node declares, one hop out. For a schema that is its
+      // fields; for an operation, the schemas it accepts and returns.
+      const declares = graph.edges
+        .filter(e => e.from === node.id)
+        .map(e => {
+          const target = graph.nodes.find(n => n.id === e.to);
+          return target
+            ? {
+                name: target.name,
+                type: target.type,
+                relationship: e.type,
+                via: e.via,
+                data_type: target.attributes.dataType,
+                required: target.attributes.required,
+              }
+            : null;
+        })
+        .filter(Boolean);
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            subject: node.name,
+            type: node.type,
+            file: node.source.file,
+            attributes: node.attributes,
+            declares,
+            next_step: `Call blast_radius with target "${node.name}" to see the code affected by changing it.`,
           }, null, 2),
         }],
       };
