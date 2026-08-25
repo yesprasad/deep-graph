@@ -48,13 +48,17 @@ function collectSpecs(value: string | undefined, previous: string[]): string[] {
 
 function discoverOpenApiFiles(root: string): string[] {
   const names = new Set(['openapi.json', 'openapi.yaml', 'openapi.yml', 'swagger.json', 'swagger.yaml', 'swagger.yml']);
+  const looksLikeOpenApi = (name: string): boolean => {
+    if (/_deparsed\.(?:json|ya?ml)$/i.test(name)) return false;
+    return names.has(name.toLowerCase()) || /(?:openapi|swagger)[^/]*\.(?:json|ya?ml)$/i.test(name);
+  };
   const found: string[] = [];
   const walk = (directory: string): void => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === 'build') continue;
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) walk(absolute);
-      else if (names.has(entry.name.toLowerCase())) found.push(absolute);
+      else if (looksLikeOpenApi(entry.name)) found.push(absolute);
     }
   };
   walk(root);

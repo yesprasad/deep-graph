@@ -86,12 +86,21 @@ function refName(ref: string): string | null {
   return parts[parts.length - 1] ?? null;
 }
 
+function schemaVariants(value: OpenApiSchema[] | OpenApiSchema | undefined): OpenApiSchema[] {
+  if (Array.isArray(value)) return value;
+  return value && typeof value === 'object' ? [value] : [];
+}
+
 export function extractApiGraph(
   api: LoadedApi,
   /** Root to report spec paths against, matching how modules are reported. */
   rootDir: string = process.cwd()
 ): ApiExtractionResult {
-  const slug = slugify(api.title);
+  // Titles are not guaranteed to be unique across documents (Supabase's
+  // functions and analytics specs both use "logflare"). Include the source
+  // basename so federated documents cannot overwrite one another's IDs.
+  const sourceSlug = slugify(path.basename(api.file, path.extname(api.file)));
+  const slug = `${slugify(api.title)}-${sourceSlug}`;
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const unresolvedRefs: string[] = [];
@@ -197,7 +206,7 @@ export function extractApiGraph(
     }
 
     for (const key of ['allOf', 'oneOf', 'anyOf'] as const) {
-      for (const variant of valueSchema[key] ?? []) {
+      for (const variant of schemaVariants(valueSchema[key])) {
         if (variant.$ref) linkRef(id, variant.$ref, key);
       }
     }
@@ -247,7 +256,7 @@ export function extractApiGraph(
     // right — `AdminUser: allOf [User, {...}]` means a change to User
     // reaches AdminUser.
     for (const key of ['allOf', 'oneOf', 'anyOf'] as const) {
-      for (const variant of schema[key] ?? []) {
+      for (const variant of schemaVariants(schema[key])) {
         if (variant.$ref) linkRef(id, variant.$ref, key);
       }
     }
@@ -263,7 +272,7 @@ export function extractApiGraph(
     // an allOf member's inline fields belong to this schema.
     const propertySources: OpenApiSchema[] = [
       schema,
-      ...(schema.allOf ?? []).filter(v => !v.$ref),
+      ...schemaVariants(schema.allOf).filter(v => !v.$ref),
     ];
 
     for (const source of propertySources) {

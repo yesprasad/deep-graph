@@ -16,9 +16,11 @@ export interface OpenApiSchema {
   required?: string[];
   items?: OpenApiSchema;
   additionalProperties?: boolean | OpenApiSchema;
-  allOf?: OpenApiSchema[];
-  oneOf?: OpenApiSchema[];
-  anyOf?: OpenApiSchema[];
+  // OpenAPI normally specifies arrays here, but some generated specs emit a
+  // single schema object. The extractor normalizes both forms.
+  allOf?: OpenApiSchema[] | OpenApiSchema;
+  oneOf?: OpenApiSchema[] | OpenApiSchema;
+  anyOf?: OpenApiSchema[] | OpenApiSchema;
   enum?: unknown[];
   nullable?: boolean;
   deprecated?: boolean;

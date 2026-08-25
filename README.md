@@ -154,6 +154,76 @@ It exits with status `1` when `--fail-on-breaking` is set and a breaking API
 change is detected. The JSON output is suitable for publishing as a GitHub PR
 comment.
 
+#### Example: Supabase PR impact and API graph
+
+We ran `pr-check` against [Supabase PR #49451](https://github.com/supabase/supabase/pull/49451)
+with the repository's OpenAPI specs discovered automatically. The PR changed
+one TypeScript file, produced four direct downstream module impacts, and made
+no OpenAPI contract changes:
+
+```text
+Changed:  apps/design-system/registry/schema.ts
+Impacted: 4 modules
+Breaking API changes: 0
+Risk: LOW
+```
+
+The same checkout contains six OpenAPI documents. Deep-Graph extracted 372
+operations, 208 schemas, and 1,975 schema fields, producing a 27,120-node and
+32,192-edge combined graph with 11 framework and 28 inferred code bridges. The
+diagram below is a readable excerpt of that graph—not the full graph—and shows
+both the PR blast radius and API consumers:
+
+```mermaid
+flowchart LR
+  subgraph PR[Supabase PR #49451]
+    Schema["apps/design-system/registry/schema.ts"]
+    Charts["registry/charts.ts"]
+    Copy["registry/copy-writing.ts"]
+    Examples["registry/examples.ts"]
+    Build["scripts/build-registry.mts"]
+
+    Schema -->|imports| Charts
+    Schema -->|imports| Copy
+    Schema -->|imports| Examples
+    Schema -->|imports| Build
+  end
+
+  subgraph API[Supabase API contract excerpt]
+    QueryHook["use-run-query.ts::runQuery"]
+    QueryRoute["ai/sql/route.ts::getDbSchema"]
+    QueryEndpoint["POST /v1/projects/{ref}/database/query"]
+    QueryBody["V1RunQueryBody"]
+    QueryField["V1RunQueryBody.query"]
+    ProjectsEndpoint["POST /v1/projects"]
+    CreateBody["V1CreateProjectBody"]
+    ProjectResponse["V1ProjectResponse"]
+
+    QueryHook -->|consumes · framework| QueryEndpoint
+    QueryRoute -->|consumes · framework| QueryEndpoint
+    QueryEndpoint -->|request| QueryBody
+    QueryBody -->|contains| QueryField
+    ProjectsEndpoint -->|request| CreateBody
+    ProjectsEndpoint -->|response| ProjectResponse
+  end
+
+  classDef changed fill:#fff3cd,stroke:#d39e00,color:#111;
+  classDef impacted fill:#e8f5e9,stroke:#43a047,color:#111;
+  classDef contract fill:#e3f2fd,stroke:#1e88e5,color:#111;
+  class Schema changed;
+  class Charts,Copy,Examples,Build impacted;
+  class QueryHook,QueryRoute,QueryEndpoint,QueryBody,QueryField,ProjectsEndpoint,CreateBody,ProjectResponse contract;
+```
+
+Run the same analysis locally with:
+
+```bash
+deep-graph pr-check --base origin/master --dir ./supabase --format json
+```
+
+The Supabase OpenAPI source used for the contract excerpt is
+[`apps/docs/spec/api_v1_openapi.json`](https://github.com/supabase/supabase/blob/master/apps/docs/spec/api_v1_openapi.json).
+
 ---
 
 ### `api-diff` — What did we stop promising, and who was relying on it?
