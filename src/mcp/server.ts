@@ -64,7 +64,7 @@ function discoverSpecs(dir: string): string[] {
 
 const server = new McpServer({
   name: 'deep-graph',
-  version: '0.2.0',
+  version: '0.1.1',
 }, {
   capabilities: {
     tools: {},

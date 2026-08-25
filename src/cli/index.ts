@@ -106,7 +106,7 @@ if (showBanner) {
 program
   .name('deep-graph')
   .description('Compiler-aware dependency graph extraction for TypeScript projects')
-  .version('0.2.0')
+  .version('0.1.1')
   .option('--no-banner', 'Suppress ASCII banner');
 
 // ── Analyze Command ──
