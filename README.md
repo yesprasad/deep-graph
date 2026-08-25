@@ -163,7 +163,7 @@ Across the Studio code and five Supabase OpenAPI documents, Deep-Graph extracted
 
 ```mermaid
 flowchart LR
-  subgraph PR[Supabase PR #35240 · Studio blast radius]
+  subgraph PR[PR #35240 · Studio]
     GraphiQL["GraphiQL.tsx"]
     GraphiQLTab["GraphiQLTab.tsx"]
     Download["DownloadResultsButton.tsx"]
@@ -185,7 +185,7 @@ flowchart LR
     SQLEditor -->|transitive · depth 3| SqlPage
   end
 
-  subgraph API[Supabase API contract bridges]
+  subgraph API[API bridges]
     ProviderTS["AuthProvidersForm.types.ts::Provider"]
     ProviderAPI["OpenAPI::Provider"]
     AuthTS["auth-config-query.ts::AuthConfigResponse"]
