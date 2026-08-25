@@ -362,7 +362,7 @@ The graph captures relationships that no syntax-level tool can see:
 
 ## Limitations
 
-### Current Version (v0.1.1)
+### Current Version (v0.2.0)
 
 - **OpenAPI bridges below `explicit` are heuristics.** A `framework` bridge reads a route decorator or router call statically, and will miss a prefix applied at runtime. An `inferred` bridge is a name match and nothing more. Both are labelled in every output so they can be filtered; when a link matters, add an `@openapi` annotation and it becomes `explicit`.
 
