@@ -198,9 +198,11 @@ flowchart LR
     ReleaseTS -.->|api_implements · inferred name match| ReleaseAPI
   end
 
-  classDef changed fill:#fff3cd,stroke:#d39e00,color:#111;
-  classDef impacted fill:#e8f5e9,stroke:#43a047,color:#111;
-  classDef contract fill:#e3f2fd,stroke:#1e88e5,color:#111;
+  style PR fill:#f7f7f1,stroke:#d9e1d9,color:#11221c
+  style API fill:#ffffff,stroke:#d9e1d9,color:#11221c
+  classDef changed fill:#fff2ce,stroke:#e5a62d,color:#11221c;
+  classDef impacted fill:#e2f3e9,stroke:#1f8f61,color:#11221c;
+  classDef contract fill:#eeeafd,stroke:#5947bd,color:#11221c;
   class GraphiQL,Download changed;
   class GraphiQLTab,Linter,QueryBar,Utility,QueryPerf,SQLEditor,PerfPage,SqlPage impacted;
   class ProviderTS,ProviderAPI,AuthTS,AuthAPI,ReleaseTS,ReleaseAPI contract;
