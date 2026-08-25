@@ -16,7 +16,7 @@ import { methodId, moduleId, symbolId } from '../extractor/ids';
  * operation has an explicit implementation, a name heuristic will not
  * add a competing one.
  *
- *   explicit    @openapi JSDoc annotation
+ *   explicit    @openapi / @openapi-implements JSDoc annotation
  *   framework   route decorator or router registration
  *   shared_type a TS type generated from / shared with the schema
  *   inferred    name match only
@@ -56,6 +56,10 @@ function normalizeRoute(route: string): string {
     .replace(/:[A-Za-z0-9_]+/g, '{}');
   const trimmed = withoutParams.replace(/\/+$/, '');
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function joinRoute(prefix: string, route: string): string {
+  return normalizeRoute(`${prefix}/${route}`.replace(/\/{2,}/g, '/'));
 }
 
 function buildApiIndex(apiNodes: GraphNode[]): ApiIndex {
@@ -119,6 +123,79 @@ function firstStringArg(args: ts.NodeArray<ts.Expression>): string | null {
   return null;
 }
 
+function identifierName(expression: ts.Expression | undefined): string | null {
+  if (!expression) return null;
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression)) {
+    return identifierName(expression.expression);
+  }
+  return null;
+}
+
+function routeRegistration(
+  node: ts.CallExpression
+): { routerName: string; method: string; route: string; arguments: readonly ts.Expression[] } | null {
+  if (!ts.isPropertyAccessExpression(node.expression)) return null;
+
+  const method = node.expression.name.text.toLowerCase();
+  if (!ROUTE_DECORATORS.has(method) || method === 'all') return null;
+
+  const receiver = node.expression.expression;
+
+  // Express chaining: router.route('/users').get(handler)
+  if (
+    ts.isCallExpression(receiver) &&
+    ts.isPropertyAccessExpression(receiver.expression) &&
+    receiver.expression.name.text.toLowerCase() === 'route'
+  ) {
+    const route = firstStringArg(receiver.arguments);
+    const routerName = identifierName(receiver.expression.expression);
+    if (route && routerName) {
+      return { routerName, method, route, arguments: node.arguments };
+    }
+    return null;
+  }
+
+  // Direct registration: router.post('/users', handler)
+  const route = firstStringArg(node.arguments);
+  const routerName = identifierName(receiver);
+  if (!route || !routerName || !route.startsWith('/')) return null;
+
+  return {
+    routerName,
+    method,
+    route,
+    arguments: node.arguments.slice(1),
+  };
+}
+
+function collectRouterMounts(sourceFiles: ts.SourceFile[]): Map<string, string[]> {
+  const mounts = new Map<string, string[]>();
+
+  const add = (routerName: string, prefix: string): void => {
+    const list = mounts.get(routerName) ?? [];
+    if (!list.includes(prefix)) list.push(prefix);
+    mounts.set(routerName, list);
+  };
+
+  for (const sourceFile of sourceFiles) {
+    ts.forEachChild(sourceFile, function visit(node) {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        if (node.expression.name.text.toLowerCase() === 'use') {
+          const args = node.arguments;
+          const first = firstStringArg(args);
+          const child = first ? args[1] : args[0];
+          const childName = identifierName(child);
+          if (childName) add(childName, first ?? '');
+        }
+      }
+      ts.forEachChild(node, visit);
+    });
+  }
+
+  return mounts;
+}
+
 export function bridgeToTypeScript(
   state: CompilerState,
   apiNodes: GraphNode[]
@@ -146,6 +223,8 @@ export function bridgeToTypeScript(
   };
 
   const root = state.projectRoot;
+  const routerMounts = collectRouterMounts(state.sourceFiles);
+  const declarationIds = new Map<ts.Node, string>();
 
   // Two passes over the same files: explicit annotations everywhere
   // first, then the weaker heuristics.
@@ -180,6 +259,7 @@ export function bridgeToTypeScript(
       if (ts.isClassDeclaration(node) && node.name) {
         nextClass = node.name.text;
         holderId = symbolId(sf.fileName, nextClass, root);
+        declarationIds.set(node, holderId);
 
         // A controller-style class often carries the shared path prefix.
         for (const decorator of ts.getDecorators(node) ?? []) {
@@ -194,8 +274,10 @@ export function bridgeToTypeScript(
           node.name.getText(sf),
           root
         );
+        declarationIds.set(node, holderId);
       } else if (ts.isFunctionDeclaration(node) && node.name) {
         holderId = symbolId(sf.fileName, node.name.text, root);
+        declarationIds.set(node, holderId);
       } else if (
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
@@ -204,6 +286,8 @@ export function bridgeToTypeScript(
           ts.isFunctionExpression(node.initializer))
       ) {
         holderId = symbolId(sf.fileName, node.name.text, root);
+        declarationIds.set(node, holderId);
+        declarationIds.set(node.initializer.parent, holderId);
       } else if (
         (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) &&
         node.name
@@ -214,6 +298,7 @@ export function bridgeToTypeScript(
           file: path.relative(root, sf.fileName),
         });
         holderId = symbolId(sf.fileName, node.name.text, root);
+        declarationIds.set(node, holderId);
       }
 
       // Only keep nodes a strategy could actually match on. Retaining
@@ -234,9 +319,23 @@ export function bridgeToTypeScript(
     ts.forEachChild(sf, child => visit(child, null, '', modId));
   }
 
+  const resolveDeclarationId = (expression: ts.Expression): string | null => {
+    let symbol = state.checker.getSymbolAtLocation(expression);
+    if (!symbol) return null;
+    if (symbol.flags & ts.SymbolFlags.Alias) {
+      symbol = state.checker.getAliasedSymbol(symbol);
+    }
+    for (const declaration of symbol.getDeclarations() ?? []) {
+      const id = declarationIds.get(declaration);
+      if (id) return id;
+    }
+    return null;
+  };
+
   // ── Tier 1: explicit @openapi annotations ─────────────
   //
   //   /** @openapi POST /login */          -> implements
+  //   /** @openapi-implements POST /login */ -> implements
   //   /** @openapi-consumes GET /users */  -> consumes
   //   /** @openapi-schema LoginSuccess */  -> shared type
   //
@@ -246,12 +345,12 @@ export function bridgeToTypeScript(
     const doc = jsDocText(candidate.node);
     if (!doc.includes('@openapi')) continue;
 
-    for (const match of doc.matchAll(/@openapi(-consumes|-schema)?\s+([^\n*]+)/g)) {
-      const kind = match[1] ?? '';
+    for (const match of doc.matchAll(/@openapi(?:-(consumes|implements|schema))?\s+([^\n*]+)/g)) {
+      const kind = match[1] ?? 'implements';
       const reference = match[2].trim();
       if (!reference) continue;
 
-      if (kind === '-schema') {
+      if (kind === 'schema') {
         const schemaNode = index.schemaByName.get(reference.toLowerCase());
         if (schemaNode) {
           addEdge(candidate.holderId, schemaNode, 'api_implements', 'explicit', 'annotation');
@@ -265,7 +364,7 @@ export function bridgeToTypeScript(
       addEdge(
         candidate.holderId,
         operation,
-        kind === '-consumes' ? 'api_consumes' : 'api_implements',
+        kind === 'consumes' ? 'api_consumes' : 'api_implements',
         'explicit',
         'annotation'
       );
@@ -299,30 +398,38 @@ export function bridgeToTypeScript(
       }
     }
 
-    // router.post('/login', handler) / app.get(...) / fetch-style clients
+    // router.post('/login', handler), router.route('/login').post(handler),
+    // and nested router.use('/prefix', childRouter) registrations.
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const verb = node.expression.name.text.toLowerCase();
-      if (!ROUTE_DECORATORS.has(verb)) continue;
+      const registration = routeRegistration(node);
+      if (!registration) continue;
 
-      const literal = firstStringArg(node.arguments);
-      if (!literal || !literal.startsWith('/')) continue;
+      const prefixes = routerMounts.get(registration.routerName) ?? [''];
+      for (const prefix of prefixes) {
+        const operation = index.byRoute.get(
+          `${registration.method}${joinRoute(prefix, registration.route)}`
+        );
+        if (!operation) continue;
 
-      const operation = index.byRoute.get(`${verb}${normalizeRoute(literal)}`);
-      if (!operation) continue;
+        const handler = registration.arguments[registration.arguments.length - 1];
+        const handlerId = handler && resolveDeclarationId(handler);
+        const hasHandler = !!handler && (
+          ts.isArrowFunction(handler) ||
+          ts.isFunctionExpression(handler) ||
+          !!handlerId
+        );
 
-      // A handler argument means this registers the route; without one it
-      // is a call against the route, i.e. a consumer.
-      const hasHandler = node.arguments
-        .slice(1)
-        .some(a => ts.isArrowFunction(a) || ts.isFunctionExpression(a) || ts.isIdentifier(a));
-
-      addEdge(
-        candidate.holderId,
-        operation,
-        hasHandler ? 'api_implements' : 'api_consumes',
-        'framework',
-        `${verb}('${literal}')`
-      );
+        // Prefer the resolved controller/function symbol over the enclosing
+        // route-registration module. This preserves the actual implementation
+        // edge for `AuthController.login`, including imported class methods.
+        addEdge(
+          handlerId ?? candidate.holderId,
+          operation,
+          hasHandler ? 'api_implements' : 'api_consumes',
+          'framework',
+          `${registration.method}('${registration.route}')`
+        );
+      }
     }
   }
 

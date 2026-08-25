@@ -10,6 +10,7 @@ import { displayGraph } from './display';
 import { runBlast } from './blast';
 import { runBlastPr } from './blast-pr';
 import { runApiDiff } from './api-diff';
+import { runPrCheck } from './pr-check';
 import { buildApiGraph, mergeApiGraph, standaloneApiGraph } from '../openapi';
 import type { DependencyGraph } from '../types/graph';
 
@@ -296,6 +297,33 @@ program
   });
 
 // ── API Diff Command ──
+program
+  .command('pr-check')
+  .description('Run unified PR impact and OpenAPI contract checks')
+  .option('-b, --base <branch>', 'Base branch or revision to compare against', 'main')
+  .option('-d, --dir <path>', 'Target project directory', '.')
+  .option('--openapi <path>', 'OpenAPI/Swagger document (repeatable)', collectSpecs, [])
+  .option('-f, --format <type>', 'Output format: table, json', 'table')
+  .option('--depth <n>', 'Max traversal depth', '5')
+  .option('--fail-on-breaking', 'Exit non-zero when a breaking API change is found')
+  .action(async (options) => {
+    try {
+      runPrCheck({
+        base: options.base,
+        dir: path.resolve(options.dir),
+        openapi: options.openapi,
+        depth: parseInt(options.depth, 10),
+        format: options.format,
+        failOnBreaking: options.failOnBreaking,
+      });
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        console.error(chalk.red('\n❌ Error:'), error.message);
+      }
+      process.exit(1);
+    }
+  });
+
 program
   .command('api-diff')
   .description('Compare an OpenAPI document against its base revision and report breaking changes')

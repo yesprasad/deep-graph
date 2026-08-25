@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import Table from 'cli-table3';
 import type { DependencyGraph, GraphNode } from '../types/graph';
 
-interface PrImpactRecord {
+export interface PrImpactRecord {
   name: string;
   type: string;
   file: string;
@@ -13,14 +13,18 @@ interface PrImpactRecord {
   source: string; // which changed file triggered this
 }
 
-interface PrBlastResult {
+export interface PrBlastResult {
   changedFiles: string[];
   totalImpacted: number;
   uniqueImpacted: PrImpactRecord[];
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 }
 
-function getChangedFiles(base: string, projectRoot: string): string[] {
+export function getChangedFiles(
+  base: string,
+  projectRoot: string,
+  includeContractFiles = false
+): string[] {
   // Determine the project's path relative to the git repo root
   // so we can strip it from diff output (git always returns repo-relative paths)
   let repoRelativePrefix = '';
@@ -41,7 +45,9 @@ function getChangedFiles(base: string, projectRoot: string): string[] {
     if (!raw) return [];
     return raw
       .split('\n')
-      .filter(f => /\.(ts|tsx)$/.test(f))
+      .filter(f => includeContractFiles
+        ? /\.(ts|tsx|json|ya?ml)$/.test(f)
+        : /\.(ts|tsx)$/.test(f))
       .filter(f => !f.includes('node_modules'))
       .filter(f => !f.endsWith('.d.ts'))
       .map(f => repoRelativePrefix && f.startsWith(repoRelativePrefix)
@@ -71,7 +77,7 @@ function getChangedFiles(base: string, projectRoot: string): string[] {
   }
 }
 
-function resolveTarget(
+export function resolveTarget(
   graph: DependencyGraph,
   filePath: string,
   repoRoot?: string
@@ -131,7 +137,7 @@ function resolveTarget(
   return null;
 }
 
-function reverseTraverse(
+export function reverseTraverse(
   graph: DependencyGraph,
   targetId: string,
   maxDepth: number,

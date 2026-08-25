@@ -95,8 +95,12 @@ function findConsumers(
     const start = apiNodesByName.get(changedName);
     if (!start) continue;
 
-    // Reverse walk to the code: property -> schema -> operation -> handler.
+    // Reverse walk to the code: property -> schema -> operation -> handler,
+    // then continue through the normal TypeScript dependency graph. The
+    // handler is a bridge into the code graph, not the end of the impact
+    // chain.
     const found: Array<{ name: string; file: string; confidence?: string }> = [];
+    const foundIds = new Set<string>();
     const seen = new Set<string>([start.id]);
     const queue = [start.id];
 
@@ -110,18 +114,36 @@ function findConsumers(
         const node = byId.get(edge.from);
         if (!node) continue;
 
-        // Reaching TypeScript is the answer; reaching more API nodes is
-        // just another hop toward it.
         if (edge.type === 'api_implements' || edge.type === 'api_consumes') {
-          found.push({
-            name: node.name,
-            file: node.source.file,
-            confidence: edge.confidence,
-          });
+          if (!foundIds.has(node.id)) {
+            foundIds.add(node.id);
+            found.push({
+              name: node.name,
+              file: node.source.file,
+              confidence: edge.confidence,
+            });
+          }
+          // Continue from the bridged handler/client through calls,
+          // imports, type references, and containing modules.
+          queue.push(node.id);
           continue;
         }
 
-        if (node.type.startsWith('api_')) queue.push(edge.from);
+        if (node.type.startsWith('api_')) {
+          queue.push(node.id);
+          continue;
+        }
+
+        // Every non-API node reached after the bridge is a concrete code
+        // consumer. Keep traversing so callers several hops away are named.
+        if (!foundIds.has(node.id)) {
+          foundIds.add(node.id);
+          found.push({
+            name: node.name,
+            file: node.source.file,
+          });
+        }
+        queue.push(node.id);
       }
     }
 

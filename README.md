@@ -136,6 +136,26 @@ Runs blast radius on every TypeScript file changed in your current branch (relat
 
 ---
 
+### `pr-check` — Unified PR impact and contract analysis
+
+```bash
+deep-graph pr-check --base origin/main
+deep-graph pr-check --base origin/main --format json --fail-on-breaking
+deep-graph pr-check --base origin/main --openapi contracts/openapi.yaml
+```
+
+`pr-check` is the single CI entry point. It discovers changed TypeScript and
+OpenAPI/Swagger files, automatically finds standard contract filenames, builds
+the merged code/contract graph, reports semantic API changes, and traverses
+direct and transitive consumers. It combines the TypeScript blast radius with
+contract consumers in one result. Use `--openapi` for non-standard spec paths.
+
+It exits with status `1` when `--fail-on-breaking` is set and a breaking API
+change is detected. The JSON output is suitable for publishing as a GitHub PR
+comment.
+
+---
+
 ### `api-diff` — What did we stop promising, and who was relying on it?
 
 ```bash
@@ -203,7 +223,7 @@ A bridge edge is a claim that a function and an endpoint are the same thing, and
 |------------|----------------|
 | `explicit` | An `@openapi` annotation on the handler |
 | `generated` | Metadata from an OpenAPI client generator *(reserved — not yet emitted)* |
-| `framework` | A route decorator (`@Post('/login')`) or router registration (`router.post('/login', …)`) |
+| `framework` | A route decorator (`@Post('/login')`), direct registration, or Express chain (`router.route('/login').post(…)`) |
 | `shared_type` | A TS type generated from, or shared with, the schema |
 | `inferred` | Name match only — `User` in a spec is often not `User` in TypeScript |
 
@@ -214,6 +234,9 @@ The strongest evidence wins: once an operation has an explicit implementation, a
 ```ts
 /** @openapi POST /login */
 export function login(email: string, password: string) { … }
+
+/** @openapi-implements POST /login */
+export function loginWithExplicitContract(email: string, password: string) { … }
 
 /** @openapi-consumes GET /session */
 export async function loadSession() { … }
@@ -598,4 +621,3 @@ Copyright (c) 2026 Eshwar Sowbhagya Prasad Yaddanapudi.
 ## Author
 
 **Eshwar Sowbhagya Prasad Yaddanapudi**
-
