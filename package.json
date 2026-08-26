@@ -1,6 +1,6 @@
 {
   "name": "@yesprasad/deep-graph",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Compiler-aware dependency graph extraction for TypeScript projects",
   "bin": {
     "deep-graph": "./bin/deep-graph.js",
