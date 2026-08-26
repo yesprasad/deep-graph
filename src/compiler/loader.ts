@@ -1,11 +1,14 @@
 import ts from 'typescript';
 import path from 'path';
-import fs from 'fs';
 
 export interface CompilerState {
   program: ts.Program;
   checker: ts.TypeChecker;
   sourceFiles: ts.SourceFile[];
+  /** Build output skipped because it is generated from this project. */
+  excludedOutputFiles: string[];
+  /** Files that look generated but are included because tsconfig did not declare an outDir. */
+  suspectedGeneratedFiles: string[];
   projectRoot: string;
   tsVersion: string;
 }
@@ -146,14 +149,27 @@ export function loadProject(targetDir: string): CompilerState {
 
   // Step 5: Filter to project source files (exclude node_modules, .d.ts)
   const projectRoot = path.dirname(configPath);
+  const outputDirectory = parsedConfig.options.outDir
+    ? path.resolve(parsedConfig.options.outDir)
+    : undefined;
+  const excludedOutputFiles: string[] = [];
+  const suspectedGeneratedFiles: string[] = [];
   const sourceFiles = program.getSourceFiles().filter(sf => {
     const filePath = sf.fileName;
     // Skip declaration files
     if (sf.isDeclarationFile) return false;
     // Skip node_modules
     if (filePath.includes('node_modules')) return false;
+    // `allowJs` plus a broad include can otherwise ingest the project's own
+    // compiled bundle. `outDir` is a compiler-declared generated directory,
+    // so excluding it is safe without guessing about arbitrary `dist/` paths.
+    if (outputDirectory && isWithinDirectory(filePath, outputDirectory)) {
+      excludedOutputFiles.push(filePath);
+      return false;
+    }
     // Only include files under the project root
-    if (!filePath.startsWith(projectRoot)) return false;
+    if (!isWithinDirectory(filePath, projectRoot)) return false;
+    if (looksGenerated(filePath)) suspectedGeneratedFiles.push(filePath);
     return true;
   });
 
@@ -161,7 +177,19 @@ export function loadProject(targetDir: string): CompilerState {
     program,
     checker,
     sourceFiles,
+    excludedOutputFiles,
+    suspectedGeneratedFiles,
     projectRoot,
     tsVersion: ts.version,
   };
+}
+
+function isWithinDirectory(filePath: string, directory: string): boolean {
+  const relative = path.relative(directory, filePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function looksGenerated(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return /\/(dist|build)\//.test(normalized) || /\.min\.[cm]?js$/i.test(normalized);
 }

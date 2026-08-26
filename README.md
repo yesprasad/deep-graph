@@ -96,6 +96,19 @@ Runs a multi-hop reverse BFS traversal over the dependency graph. For any target
 | `-f, --format <type>` | Output format: `table`, `json`, `csv` | `table` |
 | `--depth <n>` | Max traversal depth | `5` |
 
+### `unused` — Find likely unused exports
+
+```bash
+deep-graph unused --dir /path/to/project
+deep-graph unused --entrypoint 'functions/api/**'
+deep-graph unused --format json
+```
+
+This reports exports with no resolved TypeScript import, call, type reference,
+or configured runtime-entrypoint use. It is intentionally conservative: use
+`--entrypoint` for file-system-discovered handlers such as Cloudflare Pages or
+framework routes, and review results before deleting code.
+
 **Risk scoring:**
 
 | Level | Threshold | Meaning |
@@ -626,7 +639,7 @@ deep-graph mcp-init --tool windsurf  # .windsurf/mcp.json
 deep-graph mcp-init --tool all       # all of the above (default)
 ```
 
-If deep-graph is installed locally (`devDependencies`), the config points to the local binary. Otherwise it uses `npx -y @yesprasad/deep-graph-mcp`.
+If deep-graph is installed locally (`devDependencies`), the config points to the local binary. Otherwise it runs the MCP binary from the published package with `npx -y -p @yesprasad/deep-graph deep-graph-mcp`.
 
 ### Tools Exposed
 
@@ -634,18 +647,20 @@ If deep-graph is installed locally (`devDependencies`), the config points to the
 |------|-------------|
 | `blast_radius` | Impact analysis — everything that depends on a target, resolved through the type system |
 | `dependencies` | Direct inbound/outbound edges for a node |
-| `unused_exports` | Dead code detection — exports nothing uses |
+| `unused_exports` | Likely unused exports, based on resolved TypeScript usage |
 | `graph_summary` | Project overview: node/edge counts, most-connected symbols |
 | `api_contract` | OpenAPI surface — operations, schemas, and every field as an addressable node |
 
 `blast_radius` accepts API targets too, so a reviewer can go from `api_contract` on a schema straight to the code that breaks if a field changes. When `openapi.json` / `swagger.json` (or the `.yaml` forms) sits at the project root, the server picks it up automatically — no extra configuration.
+
+For `unused_exports`, pass `entrypoint_globs` such as `["functions/api/**"]` when the framework discovers handlers from the file system rather than TypeScript imports.
 
 ### Manual Configuration
 
 If you prefer to configure manually, the MCP server command is:
 
 ```bash
-npx @yesprasad/deep-graph-mcp
+npx -y -p @yesprasad/deep-graph deep-graph-mcp
 ```
 
 **Claude Code** (`.mcp.json`):
@@ -654,7 +669,7 @@ npx @yesprasad/deep-graph-mcp
   "mcpServers": {
     "deep-graph": {
       "command": "npx",
-      "args": ["-y", "@yesprasad/deep-graph-mcp"],
+      "args": ["-y", "-p", "@yesprasad/deep-graph", "deep-graph-mcp"],
       "env": {}
     }
   }
@@ -667,7 +682,7 @@ npx @yesprasad/deep-graph-mcp
   "servers": {
     "deep-graph": {
       "command": "npx",
-      "args": ["-y", "@yesprasad/deep-graph-mcp"],
+      "args": ["-y", "-p", "@yesprasad/deep-graph", "deep-graph-mcp"],
       "env": {}
     }
   }

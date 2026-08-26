@@ -87,6 +87,7 @@ export function resolveTarget(
   graph: DependencyGraph,
   target: string
 ): GraphNode | null {
+  target = target.replace(/\\/g, '/');
   // API targets are checked first when the target is explicitly prefixed,
   // so `api_schema:User` can never be shadowed by a TypeScript `User`.
   if (/^api_(service|operation|schema|property):/.test(target.trim())) {

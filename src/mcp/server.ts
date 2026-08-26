@@ -184,11 +184,12 @@ server.tool(
 
 server.tool(
   'unused_exports',
-  'Lists exported symbols with zero inbound edges — dead code that nothing imports, calls, extends, or depends on.',
+  'Lists likely unused exports with no resolved TypeScript inbound usage. Pass entrypoint_globs for file-system-discovered runtime handlers.',
   {
     project_dir: z.string().optional().describe('Project directory (defaults to cwd)'),
+    entrypoint_globs: z.array(z.string()).optional().describe('Runtime entrypoint glob(s), e.g. functions/api/**'),
   },
-  async ({ project_dir }) => {
+  async ({ project_dir, entrypoint_globs }) => {
     try {
       const graph = getGraph(project_dir);
 
@@ -204,7 +205,7 @@ server.tool(
       }
 
       const unused = exportedSymbols
-        .filter(n => !hasInbound.has(n.id))
+        .filter(n => !hasInbound.has(n.id) && !matchesEntrypoint(n.source.file, entrypoint_globs ?? []))
         .map(n => ({
           name: n.name,
           type: n.type,
@@ -217,7 +218,7 @@ server.tool(
           type: 'text' as const,
           text: JSON.stringify({
             total_exports: exportedSymbols.length,
-            unused_count: unused.length,
+            likely_unused_count: unused.length,
             unused,
           }, null, 2),
         }],
@@ -230,6 +231,17 @@ server.tool(
     }
   }
 );
+
+function matchesEntrypoint(file: string, patterns: string[]): boolean {
+  const normalizedFile = file.replace(/\\/g, '/');
+  return patterns.some(pattern => {
+    const expression = '^' + pattern.replace(/\\/g, '/')
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '\u0000')
+      .replace(/\*/g, '[^/]*') + '$';
+    return new RegExp(expression.replace(/\u0000/g, '.*')).test(normalizedFile);
+  });
+}
 
 server.tool(
   'graph_summary',

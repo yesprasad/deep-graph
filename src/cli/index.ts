@@ -42,7 +42,13 @@ function buildGraph(
   let compilerState: ReturnType<typeof loadProject> | null = null;
   try {
     compilerState = loadProject(targetDir);
-    onProgress?.(`Project loaded: ${compilerState.sourceFiles.length} source files`);
+    const excluded = compilerState.excludedOutputFiles.length;
+    const suspected = compilerState.suspectedGeneratedFiles.length;
+    onProgress?.(
+      `Project loaded: ${compilerState.sourceFiles.length} source files` +
+      (excluded > 0 ? ` (excluded ${excluded} generated outDir file${excluded === 1 ? '' : 's'})` : '') +
+      (suspected > 0 ? ` — warning: ${suspected} likely generated file${suspected === 1 ? '' : 's'} included` : '')
+    );
   } catch (error) {
     if (specs.length === 0) throw error;
     onProgress?.('No TypeScript project found — analyzing the contract alone');
@@ -93,6 +99,18 @@ const banner = `
   ██████╔╝███████╗███████╗██║            ╚██████╔╝██║  ██║██║  ██║██║     ██║  ██║
   ╚═════╝ ╚══════╝╚══════╝╚═╝             ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝
 `;
+
+function matchesEntrypoint(file: string, patterns: string[]): boolean {
+  const normalizedFile = file.replace(/\\/g, '/');
+  return patterns.some(pattern => {
+    const normalizedPattern = pattern.replace(/\\/g, '/');
+    const expression = '^' + normalizedPattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '\u0000')
+      .replace(/\*/g, '[^/]*') + '$';
+    return new RegExp(expression.replace(/\u0000/g, '.*')).test(normalizedFile);
+  });
+}
 
 const program = new Command();
 
@@ -418,10 +436,12 @@ program
 // ── Unused Command ──
 program
   .command('unused')
-  .description('Find exported symbols that nothing depends on (dead exports)')
+  .description('Find likely unused exports from resolved TypeScript usage')
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-g, --graph <path>', 'Path to existing graph JSON (skips extraction)')
+  .option('--entrypoint <glob...>', 'Runtime entrypoint glob(s) to retain, e.g. functions/api/**')
   .option('-f, --format <type>', 'Output format: table, json', 'table')
+  .option('-q, --quiet', 'Suppress progress and banner output')
   .action(async (options) => {
     let spinner: ora.Ora | undefined;
 
@@ -442,13 +462,19 @@ program
       } else {
         const targetDir = path.resolve(options.dir);
 
-        spinner = ora('Loading TypeScript project...').start();
+        if (!options.quiet) spinner = ora('Loading TypeScript project...').start();
         const compilerState = loadProject(targetDir);
-        spinner.succeed(`Project loaded: ${chalk.cyan(compilerState.sourceFiles.length)} source files`);
+        const excluded = compilerState.excludedOutputFiles.length;
+        const suspected = compilerState.suspectedGeneratedFiles.length;
+        spinner?.succeed(
+          `Project loaded: ${chalk.cyan(compilerState.sourceFiles.length)} source files` +
+          (excluded > 0 ? chalk.yellow(` (excluded ${excluded} generated outDir file${excluded === 1 ? '' : 's'})`) : '') +
+          (suspected > 0 ? chalk.yellow(` — warning: ${suspected} likely generated file${suspected === 1 ? '' : 's'} included`) : '')
+        );
 
-        spinner = ora('Extracting dependency graph...').start();
+        if (!options.quiet) spinner = ora('Extracting dependency graph...').start();
         graph = extractGraph(compilerState);
-        spinner.succeed(`Graph built: ${chalk.cyan(graph.metadata.nodeCount)} nodes, ${chalk.cyan(graph.metadata.edgeCount)} edges`);
+        spinner?.succeed(`Graph built: ${chalk.cyan(graph.metadata.nodeCount)} nodes, ${chalk.cyan(graph.metadata.edgeCount)} edges`);
       }
 
       // Find all exported symbols
@@ -464,9 +490,10 @@ program
         }
       }
 
-      // Also count any node that appears as a call/injects/extends/implements target
-      // from a different file as "used"
-      const unused = exportedSymbols.filter(n => !hasInbound.has(n.id));
+      const entrypoints = options.entrypoint ?? [];
+      const unused = exportedSymbols.filter(n =>
+        !hasInbound.has(n.id) && !matchesEntrypoint(n.source.file, entrypoints)
+      );
 
       if (options.format === 'json') {
         const result = unused.map(n => ({
@@ -479,12 +506,12 @@ program
         return;
       }
 
-      console.log(chalk.yellow.bold('\n🗑️  DEAD EXPORTS'));
+      console.log(chalk.yellow.bold('\n🗑️  LIKELY UNUSED EXPORTS'));
       console.log(chalk.gray('═'.repeat(80)));
-      console.log(chalk.gray(`Exported symbols with zero dependents — nothing imports, calls, extends, or injects them.\n`));
+      console.log(chalk.gray('Exports with no resolved import, call, type, or configured runtime-entrypoint use.\n'));
 
       if (unused.length === 0) {
-        console.log(chalk.green('✅ No dead exports found. Every exported symbol is used.\n'));
+        console.log(chalk.green('✅ No likely unused exports found.\n'));
         return;
       }
 
@@ -513,7 +540,7 @@ program
           });
 
         console.log(table.toString());
-        console.log(chalk.yellow(`\n📊 ${unused.length} dead export${unused.length === 1 ? '' : 's'} found`) +
+        console.log(chalk.yellow(`\n📊 ${unused.length} likely unused export${unused.length === 1 ? '' : 's'} found`) +
           chalk.gray(` out of ${exportedSymbols.length} total exports`));
         console.log(chalk.gray('─'.repeat(80)) + '\n');
       }
@@ -537,7 +564,7 @@ program
     const useNpx = options.global || !fs.existsSync(path.join(process.cwd(), 'node_modules', '@yesprasad', 'deep-graph'));
 
     const mcpConfig = useNpx
-      ? { command: 'npx', args: ['-y', '@yesprasad/deep-graph-mcp'] }
+      ? { command: 'npx', args: ['-y', '-p', '@yesprasad/deep-graph', 'deep-graph-mcp'] }
       : { command: 'node', args: ['node_modules/@yesprasad/deep-graph/bin/deep-graph-mcp.js'] };
 
     const targets: { name: string; file: string; content: string }[] = [];

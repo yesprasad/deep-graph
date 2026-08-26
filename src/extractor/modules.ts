@@ -1,8 +1,7 @@
 import ts from 'typescript';
-import path from 'path';
 import type { CompilerState } from '../compiler/loader';
 import type { GraphNode, GraphEdge } from '../types/graph';
-import { moduleId } from './ids';
+import { graphPath, moduleId } from './ids';
 
 /**
  * MODULE EXTRACTOR
@@ -58,7 +57,7 @@ export function extractModules(state: CompilerState): ModuleExtractionResult {
 
   // Step 1: Create a module node for each source file
   for (const sf of sourceFiles) {
-    const relative = path.relative(projectRoot, sf.fileName);
+    const relative = graphPath(sf.fileName, projectRoot);
     const id = moduleId(sf.fileName, projectRoot);
 
     // Count exports in this module
