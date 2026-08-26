@@ -5,6 +5,8 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { loadProject } from '../compiler/loader';
 import { extractGraph } from '../extractor';
+import { extractJavaGraph, loadJavaProject } from '../java';
+import { enrichJavaGraphWithJdtls } from '../java/jdtls';
 import { writeGraph } from '../output/writer';
 import { displayGraph } from './display';
 import { runBlast } from './blast';
@@ -31,31 +33,44 @@ function collectSpecs(value: string, previous: string[]): string[] {
  * bridge edges make blast radius cross the boundary.
  */
 function buildGraph(
-  options: { dir?: string; openapi?: string[]; quiet?: boolean },
+  options: { dir?: string; openapi?: string[]; quiet?: boolean; language?: 'auto' | 'typescript' | 'java' },
   onProgress?: (message: string) => void
 ): DependencyGraph {
   const specs = options.openapi ?? [];
   const targetDir = path.resolve(options.dir ?? '.');
+  onProgress?.(`Reading codebase: ${targetDir}`);
+  onProgress?.('Identifying language and project configuration');
 
   // With specs present, a missing TypeScript project is not an error —
   // a repository that holds only a contract is a valid thing to analyze.
   let compilerState: ReturnType<typeof loadProject> | null = null;
+  let javaState: ReturnType<typeof loadJavaProject> | null = null;
+  const language = options.language ?? 'auto';
   try {
+    if (language === 'java') throw new Error('Java explicitly requested');
     compilerState = loadProject(targetDir);
     const excluded = compilerState.excludedOutputFiles.length;
     const suspected = compilerState.suspectedGeneratedFiles.length;
     onProgress?.(
-      `Project loaded: ${compilerState.sourceFiles.length} source files` +
+      `Identified: TypeScript — compiler ${compilerState.tsVersion}; ${compilerState.sourceFiles.length} source files` +
       (excluded > 0 ? ` (excluded ${excluded} generated outDir file${excluded === 1 ? '' : 's'})` : '') +
       (suspected > 0 ? ` — warning: ${suspected} likely generated file${suspected === 1 ? '' : 's'} included` : '')
     );
-  } catch (error) {
-    if (specs.length === 0) throw error;
-    onProgress?.('No TypeScript project found — analyzing the contract alone');
+  } catch (typescriptError) {
+    try {
+      if (language === 'typescript') throw typescriptError;
+      javaState = loadJavaProject(targetDir);
+      onProgress?.(
+        `Identified: Java — ${javaState.buildSystem} project; ${javaState.sourceFiles.length} source files (structural graph)`
+      );
+    } catch (javaError) {
+      if (specs.length === 0) throw (language === 'java' ? javaError : typescriptError);
+      onProgress?.('No TypeScript or Java project found — analyzing the contract alone');
+    }
   }
 
   // TypeScript first so progress reads in the order the work happens.
-  const graph = compilerState ? extractGraph(compilerState) : null;
+  const graph = compilerState ? extractGraph(compilerState) : javaState ? extractJavaGraph(javaState) : null;
   if (graph) {
     onProgress?.(
       `Graph built: ${graph.metadata.nodeCount} nodes, ${graph.metadata.edgeCount} edges`
@@ -75,6 +90,29 @@ function buildGraph(
   warnUnresolved(api.unresolvedRefs, options.quiet);
 
   return graph ? mergeApiGraph(graph, api) : standaloneApiGraph(api);
+}
+
+async function buildSemanticGraph(
+  options: { dir?: string; openapi?: string[]; quiet?: boolean; language?: 'auto' | 'typescript' | 'java'; semantic?: 'off' | 'auto' | 'required'; jdtls?: string; java?: string },
+  onProgress?: (message: string) => void
+): Promise<DependencyGraph> {
+  const graph = buildGraph(options, onProgress);
+  if (graph.metadata.language !== 'java' || (options.semantic ?? 'auto') === 'off') return graph;
+  onProgress?.('Semantic resolution: Eclipse JDT Language Server — checking availability');
+  const state = loadJavaProject(path.resolve(options.dir ?? '.'));
+  const enriched = await enrichJavaGraphWithJdtls(graph, state, {
+    mode: options.semantic, jdtlsPath: options.jdtls, javaPath: options.java,
+  });
+  const semantic = enriched.metadata.semantic;
+  if (semantic?.status === 'available' || semantic?.status === 'partial') {
+    onProgress?.(
+      `Java semantic graph (${semantic.status}): ${semantic.references} references, ` +
+      `${semantic.implementations} implementations, ${semantic.calls} calls, ${semantic.diagnostics} diagnostics`
+    );
+  } else {
+    onProgress?.(`Java semantic analysis unavailable: ${semantic?.message ?? 'unknown reason'}`);
+  }
+  return enriched;
 }
 
 function warnUnresolved(refs: string[], quiet?: boolean): void {
@@ -117,23 +155,27 @@ const program = new Command();
 const showBanner = !process.argv.includes('--no-banner') && !process.argv.includes('--quiet');
 if (showBanner) {
   console.log(chalk.cyan(banner));
-  console.log(chalk.gray('        Compiler-aware dependency graph extraction for TypeScript projects'));
+  console.log(chalk.gray('        PR-focused dependency graph extraction for TypeScript and Java projects'));
   console.log(chalk.gray('        ────────────────────────────────────────────────────────────────\n'));
 }
 
 program
   .name('deep-graph')
-  .description('Compiler-aware dependency graph extraction for TypeScript projects')
+  .description('PR-focused dependency graph extraction for TypeScript and Java projects')
   .version('0.2.0')
   .option('--no-banner', 'Suppress ASCII banner');
 
 // ── Analyze Command ──
 program
   .command('analyze')
-  .description('Extract dependency graph from a TypeScript project')
+  .description('Extract a dependency graph from a TypeScript or Java project')
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-o, --output <path>', 'Output file path', 'deep-graph.json')
   .option('--openapi <path>', 'OpenAPI/Swagger document to include (repeatable)', collectSpecs, [])
+  .option('--language <language>', 'Project language: auto, typescript, java', 'auto')
+  .option('--semantic <mode>', 'Java semantics: off, auto, required', 'auto')
+  .option('--jdtls <path>', 'Path to an Eclipse JDT LS distribution')
+  .option('--java <path>', 'Path to a Java 21+ executable')
   .option('-q, --quiet', 'Suppress console output')
   .option('--no-display', 'Skip visual display')
   .action(async (options) => {
@@ -146,7 +188,7 @@ program
         spinner = ora('Loading project...').start();
       }
 
-      const graph = buildGraph(options, message => {
+      const graph = await buildSemanticGraph(options, message => {
         if (spinner) {
           spinner.succeed(message);
           spinner = options.quiet ? undefined : ora('Working...').start();
@@ -217,6 +259,10 @@ program
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-g, --graph <path>', 'Path to existing graph JSON (skips extraction)')
   .option('--openapi <path>', 'OpenAPI/Swagger document to include (repeatable)', collectSpecs, [])
+  .option('--language <language>', 'Project language: auto, typescript, java', 'auto')
+  .option('--semantic <mode>', 'Java semantics: off, auto, required', 'auto')
+  .option('--jdtls <path>', 'Path to an Eclipse JDT LS distribution')
+  .option('--java <path>', 'Path to a Java 21+ executable')
   .option('-f, --format <type>', 'Output format: table, json, csv', 'table')
   .option('--depth <n>', 'Max traversal depth', '5')
   .action(async (target: string, options) => {
@@ -239,7 +285,7 @@ program
         graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
       } else {
         spinner = ora('Loading project...').start();
-        graph = buildGraph(options, message => {
+        graph = await buildSemanticGraph(options, message => {
           if (spinner) {
             spinner.succeed(message);
             spinner = ora('Working...').start();
@@ -269,6 +315,10 @@ program
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('-g, --graph <path>', 'Path to existing graph JSON (skips extraction)')
   .option('--openapi <path>', 'OpenAPI/Swagger document to include (repeatable)', collectSpecs, [])
+  .option('--language <language>', 'Project language: auto, typescript, java', 'auto')
+  .option('--semantic <mode>', 'Java semantics: off, auto, required', 'auto')
+  .option('--jdtls <path>', 'Path to an Eclipse JDT LS distribution')
+  .option('--java <path>', 'Path to a Java 21+ executable')
   .option('-f, --format <type>', 'Output format: table, json, csv', 'table')
   .option('--depth <n>', 'Max traversal depth', '5')
   .action(async (options) => {
@@ -290,7 +340,7 @@ program
         graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
       } else {
         spinner = ora('Loading project...').start();
-        graph = buildGraph(options, message => {
+        graph = await buildSemanticGraph(options, message => {
           if (spinner) {
             spinner.succeed(message);
             spinner = ora('Working...').start();
@@ -321,18 +371,26 @@ program
   .option('-b, --base <branch>', 'Base branch or revision to compare against', 'main')
   .option('-d, --dir <path>', 'Target project directory', '.')
   .option('--openapi <path>', 'OpenAPI/Swagger document (repeatable)', collectSpecs, [])
+  .option('--language <language>', 'Project language: auto, typescript, java', 'auto')
+  .option('--semantic <mode>', 'Java semantics: off, auto, required', 'auto')
+  .option('--jdtls <path>', 'Path to an Eclipse JDT LS distribution')
+  .option('--java <path>', 'Path to a Java 21+ executable')
   .option('-f, --format <type>', 'Output format: table, json', 'table')
   .option('--depth <n>', 'Max traversal depth', '5')
   .option('--fail-on-breaking', 'Exit non-zero when a breaking API change is found')
   .action(async (options) => {
     try {
-      runPrCheck({
+      await runPrCheck({
         base: options.base,
         dir: path.resolve(options.dir),
         openapi: options.openapi,
         depth: parseInt(options.depth, 10),
         format: options.format,
         failOnBreaking: options.failOnBreaking,
+        language: options.language,
+        semantic: options.semantic,
+        jdtlsPath: options.jdtls,
+        javaPath: options.java,
       });
     } catch (error: unknown) {
       if (error instanceof Error) {

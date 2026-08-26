@@ -60,6 +60,7 @@ export function extractGraph(state: CompilerState): DependencyGraph {
   // Metadata
   const metadata: GraphMetadata = {
     projectRoot: state.projectRoot,
+    language: 'typescript',
     tsVersion: state.tsVersion,
     nodeCount: nodes.length,
     edgeCount: edges.length,

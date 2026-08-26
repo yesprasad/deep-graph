@@ -5,9 +5,9 @@
 # deep-graph
 
 **Structural context for AI code review.**
-*Currently supports TypeScript projects*
+*PR impact analysis for TypeScript and Java codebases.*
 
-`deep-graph` answers one question: *what breaks if this file changes?* It resolves every import, type reference, and cross-module dependency through the TypeScript type system — not string matching — so the blast radius is complete, not approximate.
+`deep-graph` answers one question: *what breaks if this file changes?* It builds a dependency graph from the strongest semantic information available for the repository, then traces the PR blast radius without relying on string matching.
 
 ```bash
 npx @yesprasad/deep-graph analyze
@@ -25,11 +25,9 @@ AI code review tools read diffs. They don't know what depends on what you change
 ## Prerequisites
 
 - **Node.js 18+**
-- **A TypeScript project with a `tsconfig.json`**
-- **`node_modules` installed** — needed to resolve imports into external packages
-- TypeScript 4.7+ recommended (tested on 5.x)
+- A supported project configuration — see [language support](#language-support)
 
-**No other dependencies required.** `deep-graph` bundles TypeScript and uses it to load your project. It does not modify your source code, your tsconfig, or your build output.
+DeepGraph never modifies source files, project configuration, or build output.
 
 ---
 
@@ -65,6 +63,21 @@ deep-graph analyze --quiet --no-display
 ```
 
 Produces a `deep-graph.json` file containing every module, symbol, and resolved relationship in your project.
+
+## Language support
+
+The same commands work across languages. DeepGraph detects the project by default; use `--language` only to force a choice.
+
+| Language | Structural analysis | Semantic resolution | Setup |
+| --- | --- | --- | --- |
+| TypeScript | Imports, symbols, types, calls, inheritance | Bundled TypeScript compiler | [TypeScript guide](docs/languages/typescript.md) |
+| Java | Packages, imports, types, methods, inheritance | Optional Eclipse JDT Language Server | [Java guide](docs/languages/java.md) |
+
+For high-confidence Java CI checks:
+
+```bash
+deep-graph pr-check --language java --semantic required --base origin/main
+```
 
 **Output includes:**
 
