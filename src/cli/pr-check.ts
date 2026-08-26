@@ -6,6 +6,8 @@ import chalk from 'chalk';
 import Table from 'cli-table3';
 import { loadProject, type CompilerState } from '../compiler/loader';
 import { extractGraph } from '../extractor';
+import { extractJavaGraph, loadJavaProject } from '../java';
+import { enrichJavaGraphWithJdtls } from '../java/jdtls';
 import { buildApiGraph, mergeApiGraph, standaloneApiGraph } from '../openapi';
 import { diffApiGraphs, type ApiChange } from '../openapi/diff';
 import type { DependencyGraph } from '../types/graph';
@@ -18,6 +20,10 @@ interface PrCheckOptions {
   depth?: number;
   format?: 'table' | 'json';
   failOnBreaking?: boolean;
+  language?: 'auto' | 'typescript' | 'java';
+  semantic?: 'off' | 'auto' | 'required';
+  jdtlsPath?: string;
+  javaPath?: string;
 }
 
 interface Consumer {
@@ -30,8 +36,13 @@ interface Consumer {
 
 export interface PrCheckResult {
   base: string;
+  /** Language DeepGraph selected for the code graph, if any. */
+  language?: 'typescript' | 'java';
+  /** Compiler version when TypeScript supplied the semantic graph. */
+  compilerVersion?: string;
   changedFiles: string[];
   changedTypeScriptFiles: string[];
+  changedJavaFiles: string[];
   openapiFiles: string[];
   newOpenApiFiles: string[];
   apiChanges: Array<ApiChange & { consumers: Consumer[] }>;
@@ -39,6 +50,7 @@ export interface PrCheckResult {
   safeCount: number;
   impacted: Consumer[];
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  semantic?: DependencyGraph['metadata']['semantic'];
 }
 
 function collectSpecs(value: string | undefined, previous: string[]): string[] {
@@ -87,9 +99,10 @@ function readAtRevision(specPath: string, revision: string, repoRoot: string): s
 function buildGraphForSpecs(
   directory: string,
   specs: string[],
-  state: CompilerState | null
+  state: CompilerState | null,
+  javaState: ReturnType<typeof loadJavaProject> | null
 ): DependencyGraph | null {
-  const codeGraph = state ? extractGraph(state) : null;
+  const codeGraph = state ? extractGraph(state) : javaState ? extractJavaGraph(javaState) : null;
   if (specs.length === 0) return codeGraph;
   const api = buildApiGraph(specs, state, directory);
   return codeGraph ? mergeApiGraph(codeGraph, api) : {
@@ -122,11 +135,12 @@ function apiNodeByName(graph: DependencyGraph | null, name: string) {
   );
 }
 
-export function analyzePr(options: PrCheckOptions): PrCheckResult {
+export async function analyzePr(options: PrCheckOptions): Promise<PrCheckResult> {
   const directory = path.resolve(options.dir);
   const depth = options.depth ?? 5;
   const changedFiles = getChangedFiles(options.base, directory, true);
   const changedTypeScriptFiles = changedFiles.filter(file => /\.(ts|tsx)$/.test(file));
+  const changedJavaFiles = changedFiles.filter(file => file.endsWith('.java'));
 
   const explicitSpecs = (options.openapi ?? []).map(spec => path.resolve(directory, spec));
   const discovered = discoverOpenApiFiles(directory);
@@ -134,13 +148,25 @@ export function analyzePr(options: PrCheckOptions): PrCheckResult {
   const newOpenApiFiles: string[] = [];
 
   let state: CompilerState | null = null;
+  let javaState: ReturnType<typeof loadJavaProject> | null = null;
   try {
+    if (options.language === 'java') throw new Error('Java explicitly requested');
     state = loadProject(directory);
-  } catch {
-    if (openapiFiles.length === 0) throw new Error(`No TypeScript project or OpenAPI document found in ${directory}`);
+  } catch (typescriptError) {
+    try {
+      if (options.language === 'typescript') throw typescriptError;
+      javaState = loadJavaProject(directory);
+    } catch {
+      if (openapiFiles.length === 0) throw new Error(`No TypeScript or Java project or OpenAPI document found in ${directory}`);
+    }
   }
 
-  const currentGraph = buildGraphForSpecs(directory, openapiFiles, state);
+  let currentGraph = buildGraphForSpecs(directory, openapiFiles, state, javaState);
+  if (currentGraph && javaState && (options.semantic ?? 'auto') !== 'off') {
+    currentGraph = await enrichJavaGraphWithJdtls(currentGraph, javaState, {
+      mode: options.semantic, jdtlsPath: options.jdtlsPath, javaPath: options.javaPath,
+    });
+  }
   const baseSpecPaths: string[] = [];
   const tempDirs: string[] = [];
   const apiChanges: Array<ApiChange & { consumers: Consumer[] }> = [];
@@ -169,7 +195,7 @@ export function analyzePr(options: PrCheckOptions): PrCheckResult {
     // the current TypeScript program, allowing a removed contract field to
     // still resolve into the unchanged handlers and their callers.
     const baseGraph = baseSpecPaths.length > 0
-      ? buildGraphForSpecs(directory, baseSpecPaths, state)
+      ? buildGraphForSpecs(directory, baseSpecPaths, state, javaState)
       : null;
 
     for (const change of apiChanges) {
@@ -183,7 +209,7 @@ export function analyzePr(options: PrCheckOptions): PrCheckResult {
     }
 
     const impacted = new Map<string, Consumer>();
-    for (const file of changedTypeScriptFiles) {
+    for (const file of [...changedTypeScriptFiles, ...changedJavaFiles]) {
       const target = currentGraph && resolveTarget(currentGraph, file, repoRoot);
       if (!target || !currentGraph) continue;
       for (const item of reverseTraverse(currentGraph, target.id, depth, file)) {
@@ -213,8 +239,13 @@ export function analyzePr(options: PrCheckOptions): PrCheckResult {
 
     return {
       base: options.base,
+      language: currentGraph?.metadata.language,
+      compilerVersion: currentGraph?.metadata.language === 'typescript'
+        ? currentGraph.metadata.tsVersion
+        : undefined,
       changedFiles,
       changedTypeScriptFiles,
+      changedJavaFiles,
       openapiFiles,
       newOpenApiFiles,
       apiChanges,
@@ -222,6 +253,7 @@ export function analyzePr(options: PrCheckOptions): PrCheckResult {
       safeCount: apiChanges.length - breakingCount,
       impacted: uniqueImpacted,
       riskLevel,
+      semantic: currentGraph?.metadata.semantic,
     };
   } finally {
     for (const directoryToRemove of tempDirs) {
@@ -230,8 +262,22 @@ export function analyzePr(options: PrCheckOptions): PrCheckResult {
   }
 }
 
-export function runPrCheck(options: PrCheckOptions): void {
-  const result = analyzePr(options);
+export async function runPrCheck(options: PrCheckOptions): Promise<void> {
+  const humanOutput = options.format !== 'json';
+  if (humanOutput) {
+    console.log(chalk.cyan.bold('\nDEEPGRAPH') + chalk.gray(' · PR impact intelligence'));
+    console.log(chalk.gray(`Reading codebase: ${path.resolve(options.dir)}`));
+    console.log(chalk.gray('Identifying language and project configuration…'));
+  }
+  const result = await analyzePr(options);
+  if (humanOutput && result.language === 'typescript') {
+    console.log(chalk.gray(`Identified: TypeScript — compiler ${result.compilerVersion ?? 'available'}`));
+  } else if (humanOutput && result.language === 'java') {
+    const provider = result.semantic?.status === 'available' || result.semantic?.status === 'partial'
+      ? 'Eclipse JDT Language Server'
+      : 'structural graph; JDT LS not available';
+    console.log(chalk.gray(`Identified: Java — ${provider}`));
+  }
   if (options.format === 'json') {
     console.log(JSON.stringify(result, null, 2));
   } else {
@@ -239,10 +285,20 @@ export function runPrCheck(options: PrCheckOptions): void {
     console.log(chalk.gray('═'.repeat(80)));
     console.log(chalk.gray('Base:             ') + chalk.white(result.base));
     console.log(chalk.gray('Changed files:    ') + chalk.cyan(result.changedFiles.length));
+    if (result.changedJavaFiles.length > 0) console.log(chalk.gray('Java files:       ') + chalk.cyan(result.changedJavaFiles.length));
     console.log(chalk.gray('OpenAPI files:    ') + chalk.cyan(result.openapiFiles.length));
     console.log(chalk.gray('API changes:      ') + chalk.cyan(result.apiChanges.length));
     console.log(chalk.gray('Breaking changes: ') + (result.breakingCount ? chalk.red(result.breakingCount) : chalk.green('0')));
     console.log(chalk.gray('Risk:             ') + chalk.white(result.riskLevel));
+    if (result.semantic) {
+      const color = result.semantic.status === 'available' ? chalk.green : chalk.yellow;
+      console.log(chalk.gray('Java semantics:   ') + color(`${result.semantic.status} (${result.semantic.references} refs, ${result.semantic.implementations} implementations, ${result.semantic.calls} calls)`));
+      if (result.semantic.status === 'unavailable') {
+        console.log(chalk.gray('Semantic provider: ') + chalk.yellow('Eclipse JDT LS unavailable — structural graph only'));
+      } else {
+        console.log(chalk.gray('Semantic provider: ') + chalk.cyan('Eclipse JDT Language Server'));
+      }
+    }
 
     if (result.apiChanges.length > 0) {
       const table = new Table({ head: ['Change', 'Subject', 'Breaking', 'Consumers'], style: { head: [], border: ['gray'] } });

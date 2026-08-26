@@ -205,6 +205,9 @@ export function reverseTraverse(
         case 'implements':
           reason = `implements ${connectingEdge.via || 'interface'}`;
           break;
+        case 'overrides':
+          reason = `overrides ${connectingEdge.via || 'method'}`;
+          break;
         case 'type_reference':
           reason = `references type ${connectingEdge.via || ''}`;
           break;

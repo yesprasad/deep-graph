@@ -12,7 +12,7 @@
 // ── Node Types ──────────────────────────────────────────
 
 export type NodeType =
-  | 'module'            // a .ts/.tsx source file
+  | 'module'            // a source file
   | 'function'          // function declaration or exported arrow
   | 'class'             // class declaration
   | 'method'            // method or constructor declared on a class
@@ -20,6 +20,8 @@ export type NodeType =
   | 'type_alias'        // type declaration
   | 'variable'          // exported const/let
   | 'enum'              // enum declaration
+  | 'record'            // Java record declaration
+  | 'annotation'        // Java annotation declaration
   | 'external_package'  // placeholder for npm dependency
   // ── OpenAPI contract surface ──
   | 'api_service'       // one OpenAPI document (info.title)
@@ -48,6 +50,7 @@ export type EdgeType =
   | 'call'             // function calls function
   | 'extends'          // class extends class
   | 'implements'       // class implements interface
+  | 'overrides'        // Java method overrides or implements another method
   | 'depends_on'       // class depends on another via constructor parameter type
   | 'type_reference'   // symbol uses type
   | 'composition'      // module contains symbol (parent-child)
@@ -88,12 +91,21 @@ export interface GraphEdge {
   via?: string;         // the import specifier, method name, etc.
   /** Set only on `api_implements` / `api_consumes` bridge edges. */
   confidence?: BridgeConfidence;
+  /** Evidence for a language-server-resolved relationship. */
+  evidence?: {
+    provider: 'jdtls';
+    kind: 'reference' | 'implementation' | 'incoming_call';
+    file: string;
+    line: number;
+  };
 }
 
 // ── Metadata ────────────────────────────────────────────
 
 export interface GraphMetadata {
   projectRoot: string;
+  /** Primary source language used to construct this graph. */
+  language?: 'typescript' | 'java';
   tsVersion: string;
   nodeCount: number;
   edgeCount: number;
@@ -101,6 +113,23 @@ export interface GraphMetadata {
   symbolCount: number;
   externalPackages: number;
   generatedAt: string;
+  /** Present when a language server enriched a structural graph. */
+  semantic?: {
+    provider: 'jdtls';
+    status: 'available' | 'unavailable' | 'partial';
+    references: number;
+    implementations: number;
+    calls: number;
+    diagnostics: number;
+    /** First diagnostics returned by JDT LS; capped to keep graph files bounded. */
+    diagnosticSamples?: Array<{
+      file: string;
+      line: number;
+      severity?: 'error' | 'warning' | 'information' | 'hint';
+      message: string;
+    }>;
+    message?: string;
+  };
   /** Present only when an OpenAPI document was analyzed. */
   api?: {
     /** Source documents, by path, with the title each declared. */

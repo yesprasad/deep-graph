@@ -46,8 +46,8 @@ export function getChangedFiles(
     return raw
       .split('\n')
       .filter(f => includeContractFiles
-        ? /\.(ts|tsx|json|ya?ml)$/.test(f)
-        : /\.(ts|tsx)$/.test(f))
+        ? /\.(ts|tsx|java|json|ya?ml)$/.test(f)
+        : /\.(ts|tsx|java)$/.test(f))
       .filter(f => !f.includes('node_modules'))
       .filter(f => !f.endsWith('.d.ts'))
       .map(f => repoRelativePrefix && f.startsWith(repoRelativePrefix)
@@ -189,6 +189,7 @@ export function reverseTraverse(
         case 'depends_on': reason = `depends on ${connectingEdge.via || 'parameter'}`; break;
         case 'extends': reason = `extends ${connectingEdge.via || 'class'}`; break;
         case 'implements': reason = `implements ${connectingEdge.via || 'interface'}`; break;
+        case 'overrides': reason = `overrides ${connectingEdge.via || 'method'}`; break;
         case 'type_reference': reason = `references type ${connectingEdge.via || ''}`; break;
         case 'composition': reason = 'contains symbol'; break;
         default: reason = connectingEdge.type;
