@@ -96,6 +96,19 @@ Runs a multi-hop reverse BFS traversal over the dependency graph. For any target
 | `-f, --format <type>` | Output format: `table`, `json`, `csv` | `table` |
 | `--depth <n>` | Max traversal depth | `5` |
 
+### `unused` — Find likely unused exports
+
+```bash
+deep-graph unused --dir /path/to/project
+deep-graph unused --entrypoint 'functions/api/**'
+deep-graph unused --format json
+```
+
+This reports exports with no resolved TypeScript import, call, type reference,
+or configured runtime-entrypoint use. It is intentionally conservative: use
+`--entrypoint` for file-system-discovered handlers such as Cloudflare Pages or
+framework routes, and review results before deleting code.
+
 **Risk scoring:**
 
 | Level | Threshold | Meaning |
@@ -136,6 +149,198 @@ Runs blast radius on every TypeScript file changed in your current branch (relat
 
 ---
 
+### `pr-check` — Unified PR impact and contract analysis
+
+```bash
+deep-graph pr-check --base origin/main
+deep-graph pr-check --base origin/main --format json --fail-on-breaking
+deep-graph pr-check --base origin/main --openapi contracts/openapi.yaml
+```
+
+`pr-check` is the single CI entry point. It discovers changed TypeScript and OpenAPI/Swagger files, automatically finds standard contract filenames, builds the merged code/contract graph, reports semantic API changes, and traverses direct and transitive consumers. It combines the TypeScript blast radius with contract consumers in one result. Use `--openapi` for non-standard spec paths.
+
+It exits with status `1` when `--fail-on-breaking` is set and a breaking API change is detected. The JSON output is suitable for publishing as a GitHub PR comment.
+
+#### Example: Supabase PR impact and API graph
+
+We ran `pr-check` against [Supabase PR #35240](https://github.com/supabase/supabase/pull/35240), a real Studio/GraphQL change that updates 31 files, including application TypeScript, React components, tests, configuration, and CI. Deep-Graph focused on the `apps/studio` TypeScript project and found direct and transitive consumers of the changed modules:
+
+```text
+Changed:  10 TypeScript/TSX files in the Studio scope
+Impacted: 11 direct and transitive modules
+Breaking API changes: 0
+Risk: MEDIUM
+```
+
+Across the Studio code and five Supabase OpenAPI documents, Deep-Graph extracted 213 operations, 160 schemas, and 1,155 schema fields, producing a 7,788-node and 16,127-edge combined graph with 22 inferred TypeScript-to-API bridges. The diagram below is a readable excerpt of that graph—not the full graph—and shows changed modules, direct consumers, transitive consumers, and API type bridges:
+
+```mermaid
+flowchart LR
+  subgraph PR[PR #35240 · Studio]
+    GraphiQL["GraphiQL.tsx"]
+    GraphiQLTab["GraphiQLTab.tsx"]
+    Download["DownloadResultsButton.tsx"]
+    Linter["LinterFilters.tsx"]
+    QueryBar["QueryPerformanceFilterBar.tsx"]
+    Utility["UtilityPanel.tsx"]
+    QueryPerf["QueryPerformance.tsx"]
+    SQLEditor["SQLEditor.tsx"]
+    PerfPage["advisors/query-performance.tsx"]
+    SqlPage["sql/[id].tsx"]
+
+    GraphiQL -->|imports · depth 1| GraphiQLTab
+    Download -->|imports · depth 1| Linter
+    Download -->|imports · depth 1| QueryBar
+    Download -->|imports · depth 1| Utility
+    QueryBar -->|transitive · depth 2| QueryPerf
+    Utility -->|transitive · depth 2| SQLEditor
+    QueryPerf -->|transitive · depth 3| PerfPage
+    SQLEditor -->|transitive · depth 3| SqlPage
+  end
+
+  subgraph API[API bridges]
+    ProviderTS["AuthProvidersForm.types.ts::Provider"]
+    ProviderAPI["OpenAPI::Provider"]
+    AuthTS["auth-config-query.ts::AuthConfigResponse"]
+    AuthAPI["OpenAPI::AuthConfigResponse"]
+    ReleaseTS["project-create-mutation.ts::ReleaseChannel"]
+    ReleaseAPI["OpenAPI::ReleaseChannel"]
+
+    ProviderTS -.->|api_implements · inferred name match| ProviderAPI
+    AuthTS -.->|api_implements · inferred name match| AuthAPI
+    ReleaseTS -.->|api_implements · inferred name match| ReleaseAPI
+  end
+
+  style PR fill:#f7f7f1,stroke:#d9e1d9,color:#11221c
+  style API fill:#ffffff,stroke:#d9e1d9,color:#11221c
+  classDef changed fill:#fff2ce,stroke:#e5a62d,color:#11221c;
+  classDef impacted fill:#e2f3e9,stroke:#1f8f61,color:#11221c;
+  classDef contract fill:#eeeafd,stroke:#5947bd,color:#11221c;
+  class GraphiQL,Download changed;
+  class GraphiQLTab,Linter,QueryBar,Utility,QueryPerf,SQLEditor,PerfPage,SqlPage impacted;
+  class ProviderTS,ProviderAPI,AuthTS,AuthAPI,ReleaseTS,ReleaseAPI contract;
+```
+
+Run the same analysis locally with:
+
+```bash
+deep-graph pr-check \
+  --base e99725ccf59fb8dd7dd46cd3630e6a25e8c0b384 \
+  --dir ./supabase/apps/studio \
+  --openapi ./supabase/apps/docs/spec/analytics_v0_openapi.json \
+  --openapi ./supabase/apps/docs/spec/api_v1_openapi.json \
+  --openapi ./supabase/apps/docs/spec/auth_v1_openapi.json \
+  --openapi ./supabase/apps/docs/spec/functions_v0_openapi.json \
+  --openapi ./supabase/apps/docs/spec/storage_v0_openapi.json \
+  --format json
+```
+
+The Supabase OpenAPI source used for the contract bridges is [`apps/docs/spec/api_v1_openapi.json`](https://github.com/supabase/supabase/blob/master/apps/docs/spec/api_v1_openapi.json).
+
+---
+
+### `api-diff` — What did we stop promising, and who was relying on it?
+
+```bash
+deep-graph api-diff --openapi openapi.json
+deep-graph api-diff --openapi openapi.json --base origin/main --fail-on-breaking
+deep-graph api-diff --openapi openapi.json --no-consumers --format json
+```
+
+Compares an OpenAPI document against its base revision, classifies every change as breaking or safe, and — using the merged graph — names the code that depended on what was removed.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--openapi <path>` | Spec to diff (repeatable, or comma-separated) | — |
+| `-b, --base <revision>` | Base revision to compare against | `main` |
+| `-d, --dir <path>` | Project directory | `.` |
+| `-g, --graph <path>` | Use existing graph JSON for consumer resolution | — |
+| `--no-consumers` | Spec-only diff; no TypeScript project needed | — |
+| `-f, --format <type>` | Output format: `table`, `json` | `table` |
+| `--fail-on-breaking` | Exit `1` when a breaking change is found (for CI) | — |
+
+Breaking-ness is judged from the consumer's side, and the direction of the field decides it:
+
+| Change | Response field | Request field |
+|--------|---------------|---------------|
+| Removed | **Breaking** — readers get `undefined` | Safe — server stops requiring it |
+| Added, required | Safe | **Breaking** — callers must now send it |
+| Added, optional | Safe | Safe |
+| `required` → optional | **Breaking** — no longer guaranteed | Safe |
+| Type changed | **Breaking** | **Breaking** |
+
+---
+
+## OpenAPI / REST Support
+
+Point `--openapi` at a spec and the contract becomes part of the same graph as your code. Works with **OpenAPI 3.x and Swagger 2.0**, in JSON or YAML.
+
+```bash
+deep-graph analyze --dir . --openapi openapi.json
+```
+
+**Every schema field is its own node.** This is the difference between a report that says "`LoginSuccess` changed" and one that says "`LoginSuccess.auth` was removed, and here is exactly who reads it":
+
+```bash
+deep-graph blast 'LoginSuccess.auth'
+```
+
+```text
+LoginSuccess     api_schema      declares field auth              depth 1
+POST /login      api_operation   returns (200)                    depth 2
+GET /session     api_operation   returns (200)                    depth 2
+login            function        implements endpoint [explicit]   depth 3
+loadSession      function        calls endpoint [explicit]        depth 3
+registerRoutes   function        implements endpoint [framework]  depth 3
+```
+
+`$ref`s stay edges rather than being inlined, so a shared schema is one node and a nested field still traces back to every operation that carries it.
+
+### Linking code to the contract
+
+A bridge edge is a claim that a function and an endpoint are the same thing, and those claims vary in trustworthiness. Every bridge records how it was established, strongest first — so an inferred match can be filtered out or reviewed separately.
+
+| Confidence | Established by |
+|------------|----------------|
+| `explicit` | An `@openapi` annotation on the handler |
+| `generated` | Metadata from an OpenAPI client generator *(reserved — not yet emitted)* |
+| `framework` | A route decorator (`@Post('/login')`), direct registration, or Express chain (`router.route('/login').post(…)`) |
+| `shared_type` | A TS type generated from, or shared with, the schema |
+| `inferred` | Name match only — `User` in a spec is often not `User` in TypeScript |
+
+The strongest evidence wins: once an operation has an explicit implementation, a name heuristic will not add a competing one.
+
+**Annotations** are the reliable way to link handlers your framework hides:
+
+```ts
+/** @openapi POST /login */
+export function login(email: string, password: string) { … }
+
+/** @openapi-implements POST /login */
+export function loginWithExplicitContract(email: string, password: string) { … }
+
+/** @openapi-consumes GET /session */
+export async function loadSession() { … }
+
+/** @openapi-schema LoginSuccess */
+export interface LoginResult { … }
+```
+
+### Addressing API nodes
+
+| Form | Example |
+|------|---------|
+| Operation | `'POST /login'` or `api_operation:POST:/login` |
+| Schema | `LoginSuccess` or `api_schema:LoginSuccess` |
+| Field | `LoginSuccess.auth` or `api_property:LoginSuccess.auth` |
+| Nested field | `LoginSuccess.auth.scopes` |
+
+Prefix a target to force API resolution when a TypeScript symbol shares the name.
+
+---
+
 ## When This Succeeds
 
 `deep-graph` produces accurate, complete graphs when:
@@ -170,7 +375,13 @@ The graph captures relationships that no syntax-level tool can see:
 
 ## Limitations
 
-### Current Version (v0.1.0)
+### Current Version (v0.2.0)
+
+- **OpenAPI bridges below `explicit` are heuristics.** A `framework` bridge reads a route decorator or router call statically, and will miss a prefix applied at runtime. An `inferred` bridge is a name match and nothing more. Both are labelled in every output so they can be filtered; when a link matters, add an `@openapi` annotation and it becomes `explicit`.
+
+- **External `$ref`s are not followed.** A `$ref` pointing at another file is recorded as unresolved and reported, rather than silently dropped — those schemas are absent from the graph. Bundle the spec first (`redocly bundle`, `swagger-cli bundle`) for full coverage.
+
+- **`api-diff` compares one revision to another, not a spec to its implementation.** It reports that the contract changed and who depended on the old shape. Whether the code actually still returns the field is a question for the reviewer, not the graph.
 
 - **TypeScript and JavaScript (with tsconfig).** Pure `.ts` projects work out of the box. Mixed `.ts`/`.js` codebases work when the tsconfig has `"allowJs": true` — `.js` imports are resolved and types inferred the same way. Pure JavaScript projects without any tsconfig are not supported (add a `tsconfig.json` with `"allowJs": true` to enable analysis). The same approach generalizes to other languages with accessible type-system APIs (Java, C#, Rust), but those implementations don't exist yet.
 
@@ -378,6 +589,10 @@ The generated `deep-graph.json` contains:
 | `type_alias` | Type alias declaration |
 | `enum` | Enum declaration |
 | `external_package` | Placeholder for npm dependency |
+| `api_service` | One OpenAPI document |
+| `api_operation` | One method + path pair (`POST /login`) |
+| `api_schema` | A named schema |
+| `api_property` | A single field on a schema (`LoginSuccess.auth`) |
 
 ### Edge Types
 
@@ -389,6 +604,16 @@ The generated `deep-graph.json` contains:
 | `composition` | Module contains a symbol (parent-child) |
 | `type_reference` | Symbol references a type (future) |
 | `call` | Function or method calls another function or method, resolved through the checker |
+| `api_serves` | Service declares an operation |
+| `api_request` | Operation accepts a schema as its request body |
+| `api_response` | Operation returns a schema |
+| `api_parameter` | Operation accepts a schema via path/query/header |
+| `api_contains` | Schema declares a property (or a property nests one) |
+| `api_ref` | Schema or property references another schema (`$ref`, `allOf`, …) |
+| `api_implements` | TS symbol implements an operation — carries `confidence` |
+| `api_consumes` | TS symbol calls an operation — carries `confidence` |
+
+API edges point from the declaring thing to the declared thing (operation → schema → property), so reverse traversal walks a field back out to every implementation and consumer.
 
 ---
 
@@ -414,7 +639,7 @@ deep-graph mcp-init --tool windsurf  # .windsurf/mcp.json
 deep-graph mcp-init --tool all       # all of the above (default)
 ```
 
-If deep-graph is installed locally (`devDependencies`), the config points to the local binary. Otherwise it uses `npx -y @yesprasad/deep-graph-mcp`.
+If deep-graph is installed locally (`devDependencies`), the config points to the local binary. Otherwise it runs the MCP binary from the published package with `npx -y -p @yesprasad/deep-graph deep-graph-mcp`.
 
 ### Tools Exposed
 
@@ -422,15 +647,20 @@ If deep-graph is installed locally (`devDependencies`), the config points to the
 |------|-------------|
 | `blast_radius` | Impact analysis — everything that depends on a target, resolved through the type system |
 | `dependencies` | Direct inbound/outbound edges for a node |
-| `unused_exports` | Dead code detection — exports nothing uses |
+| `unused_exports` | Likely unused exports, based on resolved TypeScript usage |
 | `graph_summary` | Project overview: node/edge counts, most-connected symbols |
+| `api_contract` | OpenAPI surface — operations, schemas, and every field as an addressable node |
+
+`blast_radius` accepts API targets too, so a reviewer can go from `api_contract` on a schema straight to the code that breaks if a field changes. When `openapi.json` / `swagger.json` (or the `.yaml` forms) sits at the project root, the server picks it up automatically — no extra configuration.
+
+For `unused_exports`, pass `entrypoint_globs` such as `["functions/api/**"]` when the framework discovers handlers from the file system rather than TypeScript imports.
 
 ### Manual Configuration
 
 If you prefer to configure manually, the MCP server command is:
 
 ```bash
-npx @yesprasad/deep-graph-mcp
+npx -y -p @yesprasad/deep-graph deep-graph-mcp
 ```
 
 **Claude Code** (`.mcp.json`):
@@ -439,7 +669,7 @@ npx @yesprasad/deep-graph-mcp
   "mcpServers": {
     "deep-graph": {
       "command": "npx",
-      "args": ["-y", "@yesprasad/deep-graph-mcp"],
+      "args": ["-y", "-p", "@yesprasad/deep-graph", "deep-graph-mcp"],
       "env": {}
     }
   }
@@ -452,7 +682,7 @@ npx @yesprasad/deep-graph-mcp
   "servers": {
     "deep-graph": {
       "command": "npx",
-      "args": ["-y", "@yesprasad/deep-graph-mcp"],
+      "args": ["-y", "-p", "@yesprasad/deep-graph", "deep-graph-mcp"],
       "env": {}
     }
   }
@@ -476,4 +706,3 @@ Copyright (c) 2026 Eshwar Sowbhagya Prasad Yaddanapudi.
 ## Author
 
 **Eshwar Sowbhagya Prasad Yaddanapudi**
-

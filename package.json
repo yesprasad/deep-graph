@@ -1,6 +1,6 @@
 {
   "name": "@yesprasad/deep-graph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Compiler-aware dependency graph extraction for TypeScript projects",
   "bin": {
     "deep-graph": "./bin/deep-graph.js",
@@ -43,6 +43,7 @@
     "commander": "^12.0.0",
     "ora": "^5.4.1",
     "typescript": "^5.0.0",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -1,4 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 120" width="440" height="120">
+  <style>
+    .wordmark { fill: #FFFFFF; }
+    .tagline { fill: #AAAAAA; }
+    .accent { fill: #F59E0B; }
+
+    @media (prefers-color-scheme: light) {
+      .wordmark { fill: #11221C; }
+      .tagline { fill: #587067; }
+      .accent { fill: #E5A62D; }
+    }
+  </style>
+
   <g transform="translate(16, 16)">
     <!-- Opening curly brace — thin -->
     <text x="0" y="68" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="72" font-weight="200" opacity="0.85">{</text>
@@ -34,7 +46,7 @@
   </g>
 
   <!-- Wordmark -->
-  <text x="158" y="48" fill="#FFFFFF" font-family="'JetBrains Mono', monospace" font-size="24" font-weight="700" letter-spacing="-0.5">deep-graph</text>
-  <text x="158" y="72" fill="#AAAAAA" font-family="'JetBrains Mono', monospace" font-size="11">Beyond the diff.</text>
-  <text x="158" y="90" fill="#F59E0B" font-family="'JetBrains Mono', monospace" font-size="11">Every dependency, resolved.</text>
+  <text x="158" y="48" class="wordmark" font-family="'JetBrains Mono', monospace" font-size="24" font-weight="700" letter-spacing="-0.5">deep-graph</text>
+  <text x="158" y="72" class="tagline" font-family="'JetBrains Mono', monospace" font-size="11">Beyond the diff.</text>
+  <text x="158" y="90" class="accent" font-family="'JetBrains Mono', monospace" font-size="11">Every dependency, resolved.</text>
 </svg>

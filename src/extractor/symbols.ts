@@ -1,8 +1,7 @@
 import ts from 'typescript';
-import path from 'path';
 import type { CompilerState } from '../compiler/loader';
 import type { GraphNode, GraphEdge, NodeType } from '../types/graph';
-import { moduleId, symbolId, methodId } from './ids';
+import { graphPath, moduleId, symbolId, methodId } from './ids';
 
 /**
  * SYMBOL EXTRACTOR
@@ -35,7 +34,7 @@ export function extractSymbols(state: CompilerState): SymbolExtractionResult {
   const seenSymbols = new Set<string>();
 
   for (const sf of sourceFiles) {
-    const relative = path.relative(projectRoot, sf.fileName);
+    const relative = graphPath(sf.fileName, projectRoot);
     const parentModuleId = moduleId(sf.fileName, projectRoot);
 
     ts.forEachChild(sf, function visit(node: ts.Node) {
@@ -375,11 +374,178 @@ export function extractSymbols(state: CompilerState): SymbolExtractionResult {
     });
   }
 
+  // Export modifiers alone are not enough: `export { value }`, re-exports,
+  // and default assignments expose symbols without modifying the declaration.
+  // Ask the checker for the actual public surface, then ensure it has nodes.
+  const projectFiles = new Set(sourceFiles.map(sf => sf.fileName));
+  for (const sf of sourceFiles) {
+    const moduleSymbol = checker.getSymbolAtLocation(sf);
+    if (!moduleSymbol) continue;
+    for (const exported of checker.getExportsOfModule(moduleSymbol)) {
+      const target = resolveAlias(checker, exported);
+      const declaration = target.getDeclarations()?.find(d =>
+        projectFiles.has(d.getSourceFile().fileName)
+      );
+      if (declaration) {
+        ensureExportedSymbol(
+          declaration,
+          target.getName(),
+          projectRoot,
+          symbolNodes,
+          compositionEdges,
+          seenSymbols,
+        );
+      }
+    }
+  }
+
+  // An import binding is a resolved use of a specific exported symbol, not
+  // merely a file-to-file relationship. These edges make `unused` correct for
+  // ordinary named/default imports and give blast radius a readable reason.
+  const symbolIds = new Set(symbolNodes.map(n => n.id));
+  const seenImportEdges = new Set<string>();
+  const addImportReference = (fromId: string, node: ts.Node, via: string) => {
+    const resolved = checker.getSymbolAtLocation(node);
+    if (!resolved) return;
+    const target = resolveAlias(checker, resolved);
+    const declaration = target.getDeclarations()?.find(d => projectFiles.has(d.getSourceFile().fileName));
+    if (!declaration) return;
+    const targetId = symbolId(
+      declaration.getSourceFile().fileName,
+      exportedName(declaration, target.getName()),
+      projectRoot,
+    );
+    if (!symbolIds.has(targetId)) return;
+    const key = `${fromId}|${targetId}|${via}`;
+    if (seenImportEdges.has(key)) return;
+    seenImportEdges.add(key);
+    symbolEdges.push({ from: fromId, to: targetId, type: 'import', via });
+  };
+
+  for (const sf of sourceFiles) {
+    const fromId = moduleId(sf.fileName, projectRoot);
+    ts.forEachChild(sf, function visitImportUse(node: ts.Node) {
+      if (ts.isImportDeclaration(node) && node.importClause) {
+        const via = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : 'import';
+        if (node.importClause.name) addImportReference(fromId, node.importClause.name, via);
+        const bindings = node.importClause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements) addImportReference(fromId, element.name, via);
+        }
+      }
+
+      if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+        const specifier = node.moduleSpecifier;
+        const via = specifier && ts.isStringLiteral(specifier) ? specifier.text : 're-export';
+        for (const element of node.exportClause.elements) addImportReference(fromId, element.name, via);
+      }
+
+      // `import * as api` is only evidence for a member once that member is
+      // accessed. The checker resolves the property to the exported symbol.
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+        addImportReference(fromId, node.name, node.getText(sf));
+      }
+
+      ts.forEachChild(node, visitImportUse);
+    });
+  }
+
   return {
     symbolNodes,
     symbolEdges,
     compositionEdges,
   };
+}
+
+function resolveAlias(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
+  return symbol.flags & ts.SymbolFlags.Alias
+    ? checker.getAliasedSymbol(symbol)
+    : symbol;
+}
+
+function exportedName(declaration: ts.Declaration, fallback: string): string {
+  if (
+    (ts.isFunctionDeclaration(declaration) || ts.isClassDeclaration(declaration)) &&
+    declaration.name
+  ) {
+    return declaration.name.text;
+  }
+  if (
+    (ts.isInterfaceDeclaration(declaration) ||
+      ts.isTypeAliasDeclaration(declaration) ||
+      ts.isEnumDeclaration(declaration) ||
+      ts.isVariableDeclaration(declaration)) &&
+    ts.isIdentifier(declaration.name)
+  ) {
+    return declaration.name.text;
+  }
+  return ts.isExportAssignment(declaration) ? 'default' : fallback;
+}
+
+function ensureExportedSymbol(
+  declaration: ts.Declaration,
+  name: string,
+  projectRoot: string,
+  symbolNodes: GraphNode[],
+  compositionEdges: GraphEdge[],
+  seenSymbols: Set<string>,
+): void {
+  const sourceFile = declaration.getSourceFile();
+  const id = symbolId(sourceFile.fileName, name, projectRoot);
+  const existing = symbolNodes.find(node => node.id === id);
+  if (existing) {
+    existing.attributes.exported = true;
+    return;
+  }
+
+  let type: NodeType | null = null;
+  let declarationName = exportedName(declaration, name);
+  let attributes: Record<string, unknown> = {};
+
+  if (ts.isFunctionDeclaration(declaration)) {
+    type = 'function';
+    declarationName = declaration.name?.text ?? name;
+    attributes = { exported: true, async: !!declaration.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword), parameterCount: declaration.parameters.length };
+  } else if (ts.isClassDeclaration(declaration)) {
+    type = 'class';
+    declarationName = declaration.name?.text ?? name;
+    attributes = { exported: true, abstract: !!declaration.modifiers?.some(m => m.kind === ts.SyntaxKind.AbstractKeyword) };
+  } else if (ts.isInterfaceDeclaration(declaration)) {
+    type = 'interface';
+    declarationName = declaration.name.text;
+    attributes = { exported: true, memberCount: declaration.members.length };
+  } else if (ts.isTypeAliasDeclaration(declaration)) {
+    type = 'type_alias';
+    declarationName = declaration.name.text;
+    attributes = { exported: true };
+  } else if (ts.isEnumDeclaration(declaration)) {
+    type = 'enum';
+    declarationName = declaration.name.text;
+    attributes = { exported: true, memberCount: declaration.members.length };
+  } else if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+    type = 'variable';
+    declarationName = declaration.name.text;
+    attributes = { exported: true };
+  } else if (ts.isExportAssignment(declaration)) {
+    type = 'variable';
+    declarationName = 'default';
+    attributes = { exported: true, default: true };
+  }
+
+  if (!type) return;
+  const nodeId = symbolId(sourceFile.fileName, declarationName, projectRoot);
+  if (seenSymbols.has(nodeId)) return;
+  seenSymbols.add(nodeId);
+  const pos = sourceFile.getLineAndCharacterOfPosition(declaration.getStart());
+  symbolNodes.push({
+    id: nodeId,
+    type,
+    name: declarationName,
+    qualifiedName: `${graphPath(sourceFile.fileName, projectRoot)}::${declarationName}`,
+    attributes,
+    source: { file: graphPath(sourceFile.fileName, projectRoot), line: pos.line + 1, column: pos.character + 1 },
+  });
+  compositionEdges.push({ from: moduleId(sourceFile.fileName, projectRoot), to: nodeId, type: 'composition' });
 }
 
 function hasExportModifier(node: ts.Node): boolean {
