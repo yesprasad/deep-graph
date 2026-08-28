@@ -113,6 +113,21 @@ export interface GraphMetadata {
   symbolCount: number;
   externalPackages: number;
   generatedAt: string;
+  /** TypeScript workspace discovery and module-resolution evidence. */
+  workspace?: {
+    mode: 'single-project' | 'workspace';
+    packageManager?: 'bun' | 'pnpm' | 'yarn' | 'npm';
+    taskRunner?: 'turbo' | 'nx';
+    workspacePatterns: string[];
+    discoveredProjects: Array<{
+      configPath: string;
+      directory: string;
+      packageName?: string;
+      sourceFileCount: number;
+    }>;
+    resolvedWorkspaceImports: number;
+    unresolvedWorkspaceImports: string[];
+  };
   /** Present when a language server enriched a structural graph. */
   semantic?: {
     provider: 'jdtls';

@@ -34,6 +34,19 @@ interface Consumer {
   reason: string;
 }
 
+type ConsequenceScope = 'contained' | 'cross-project' | 'cross-surface';
+
+interface ImpactSummary {
+  /** Architectural reach, never a defect or severity verdict. */
+  scope: ConsequenceScope;
+  affectedArtifacts: number;
+  directConsumers: number;
+  transitiveConsumers: number;
+  maxDepth: number;
+  affectedProjects: string[];
+  resolution: 'complete' | 'partial' | 'not_available';
+}
+
 export interface PrCheckResult {
   base: string;
   /** Language DeepGraph selected for the code graph, if any. */
@@ -49,8 +62,9 @@ export interface PrCheckResult {
   breakingCount: number;
   safeCount: number;
   impacted: Consumer[];
-  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  impact: ImpactSummary;
   semantic?: DependencyGraph['metadata']['semantic'];
+  resolution?: DependencyGraph['metadata']['workspace'];
 }
 
 function collectSpecs(value: string | undefined, previous: string[]): string[] {
@@ -133,6 +147,38 @@ function apiNodeByName(graph: DependencyGraph | null, name: string) {
     (n.type === 'api_operation' || n.type === 'api_schema' || n.type === 'api_property') &&
     n.name === name
   );
+}
+
+function summarizeImpact(
+  changedFiles: string[],
+  impacted: Consumer[],
+  workspace: DependencyGraph['metadata']['workspace']
+): ImpactSummary {
+  const projectForFile = (file: string): string | undefined => {
+    if (!workspace) return undefined;
+    const normalized = file.replace(/\\/g, '/');
+    const match = workspace.discoveredProjects
+      .filter(project => project.directory === '.' || normalized === project.directory || normalized.startsWith(`${project.directory}/`))
+      .sort((a, b) => b.directory.length - a.directory.length)[0];
+    return match?.packageName ?? match?.directory;
+  };
+  const affectedProjects = Array.from(new Set([
+    ...changedFiles.map(projectForFile),
+    ...impacted.map(item => projectForFile(item.file)),
+  ].filter((value): value is string => Boolean(value)))).sort();
+  const resolution = !workspace ? 'not_available' : workspace.unresolvedWorkspaceImports.length === 0 ? 'complete' : 'partial';
+  const scope: ConsequenceScope = affectedProjects.length <= 1 ? 'contained'
+    : affectedProjects.length === 2 ? 'cross-project'
+    : 'cross-surface';
+  return {
+    scope,
+    affectedArtifacts: impacted.length,
+    directConsumers: impacted.filter(item => item.depth === 1).length,
+    transitiveConsumers: impacted.filter(item => item.depth > 1).length,
+    maxDepth: Math.max(0, ...impacted.map(item => item.depth)),
+    affectedProjects,
+    resolution,
+  };
 }
 
 export async function analyzePr(options: PrCheckOptions): Promise<PrCheckResult> {
@@ -231,11 +277,8 @@ export async function analyzePr(options: PrCheckOptions): Promise<PrCheckResult>
       !changedFiles.includes(item.file) && !changedFiles.includes(item.name)
     ).sort((a, b) => a.depth - b.depth || a.file.localeCompare(b.file));
     const breakingCount = apiChanges.filter(change => change.breaking).length;
-    const riskLevel: PrCheckResult['riskLevel'] =
-      breakingCount > 0 || uniqueImpacted.length >= 30 ? 'CRITICAL'
-      : uniqueImpacted.length >= 15 ? 'HIGH'
-      : uniqueImpacted.length >= 5 ? 'MEDIUM'
-      : 'LOW';
+    const resolution = currentGraph?.metadata.workspace;
+    const impact = summarizeImpact(changedFiles, uniqueImpacted, resolution);
 
     return {
       base: options.base,
@@ -252,8 +295,9 @@ export async function analyzePr(options: PrCheckOptions): Promise<PrCheckResult>
       breakingCount,
       safeCount: apiChanges.length - breakingCount,
       impacted: uniqueImpacted,
-      riskLevel,
+      impact,
       semantic: currentGraph?.metadata.semantic,
+      resolution,
     };
   } finally {
     for (const directoryToRemove of tempDirs) {
@@ -271,7 +315,10 @@ export async function runPrCheck(options: PrCheckOptions): Promise<void> {
   }
   const result = await analyzePr(options);
   if (humanOutput && result.language === 'typescript') {
-    console.log(chalk.gray(`Identified: TypeScript — compiler ${result.compilerVersion ?? 'available'}`));
+    const workspace = result.resolution;
+    const environment = [workspace?.packageManager, workspace?.taskRunner].filter(Boolean).join(' + ');
+    console.log(chalk.gray(`Identified: TypeScript — compiler ${result.compilerVersion ?? 'available'}`) +
+      (workspace?.mode === 'workspace' ? chalk.gray(`; ${workspace.discoveredProjects.length} projects${environment ? `; ${environment}` : ''}`) : ''));
   } else if (humanOutput && result.language === 'java') {
     const provider = result.semantic?.status === 'available' || result.semantic?.status === 'partial'
       ? 'Eclipse JDT Language Server'
@@ -289,7 +336,18 @@ export async function runPrCheck(options: PrCheckOptions): Promise<void> {
     console.log(chalk.gray('OpenAPI files:    ') + chalk.cyan(result.openapiFiles.length));
     console.log(chalk.gray('API changes:      ') + chalk.cyan(result.apiChanges.length));
     console.log(chalk.gray('Breaking changes: ') + (result.breakingCount ? chalk.red(result.breakingCount) : chalk.green('0')));
-    console.log(chalk.gray('Risk:             ') + chalk.white(result.riskLevel));
+    console.log(chalk.gray('Scope:            ') + chalk.cyan(result.impact.scope));
+    console.log(chalk.gray('Affected code:    ') + chalk.cyan(`${result.impact.affectedArtifacts} artifacts; ${result.impact.directConsumers} direct, ${result.impact.transitiveConsumers} transitive; depth ${result.impact.maxDepth}`));
+    if (result.impact.affectedProjects.length > 0) {
+      console.log(chalk.gray('Projects reached: ') + chalk.white(result.impact.affectedProjects.join(', ')));
+    }
+    if (result.resolution) {
+      const status = result.resolution.unresolvedWorkspaceImports.length === 0 ? chalk.green('complete') : chalk.yellow('partial');
+      console.log(chalk.gray('TS resolution:    ') + status + chalk.gray(` (${result.resolution.discoveredProjects.length} projects, ${result.resolution.resolvedWorkspaceImports} workspace imports)`));
+      if (result.resolution.unresolvedWorkspaceImports.length > 0) {
+        console.log(chalk.yellow(`Unresolved workspace imports: ${result.resolution.unresolvedWorkspaceImports.join(', ')}`));
+      }
+    }
     if (result.semantic) {
       const color = result.semantic.status === 'available' ? chalk.green : chalk.yellow;
       console.log(chalk.gray('Java semantics:   ') + color(`${result.semantic.status} (${result.semantic.references} refs, ${result.semantic.implementations} implementations, ${result.semantic.calls} calls)`));
