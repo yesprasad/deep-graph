@@ -172,6 +172,30 @@ deep-graph pr-check --base origin/main --openapi contracts/openapi.yaml
 
 `pr-check` is the single CI entry point. It discovers changed TypeScript and OpenAPI/Swagger files, automatically finds standard contract filenames, builds the merged code/contract graph, reports semantic API changes, and traverses direct and transitive consumers. It combines the TypeScript blast radius with contract consumers in one result. Use `--openapi` for non-standard spec paths.
 
+#### TypeScript workspaces and monorepos
+
+The same command works at a monorepo root:
+
+```bash
+deep-graph pr-check --base origin/main
+```
+
+DeepGraph discovers `package.json`/pnpm workspace patterns, each workspace
+`tsconfig.json`, TypeScript project references, package names and package
+exports, and each project's `baseUrl`/`paths` aliases. It builds one combined
+semantic graph, so a changed shared package can trace into its app consumers.
+Bun, Turbo, pnpm, Yarn, npm, Nx, and future runners are not required by the
+resolver; when their lockfile or configuration is present, DeepGraph reports it
+as analysis context.
+
+`--format json` includes an `impact` object with the consequence scope,
+affected-artifact/direct/transitive counts, maximum path depth, and affected
+projects. It also includes a `resolution` object with the discovered projects,
+workspace patterns, resolved workspace-import count, and any unresolved
+workspace package imports. An unresolved import means the graph is partial; it
+is never silently treated as a resolved relationship. Scope describes reach,
+not defect severity.
+
 It exits with status `1` when `--fail-on-breaking` is set and a breaking API change is detected. The JSON output is suitable for publishing as a GitHub PR comment.
 
 #### Example: Supabase PR impact and API graph
@@ -180,9 +204,9 @@ We ran `pr-check` against [Supabase PR #35240](https://github.com/supabase/supab
 
 ```text
 Changed:  10 TypeScript/TSX files in the Studio scope
-Impacted: 11 direct and transitive modules
+Affected code: 11 artifacts; direct and transitive consumers
 Breaking API changes: 0
-Risk: MEDIUM
+Consequence scope: contained
 ```
 
 Across the Studio code and five Supabase OpenAPI documents, Deep-Graph extracted 213 operations, 160 schemas, and 1,155 schema fields, producing a 7,788-node and 16,127-edge combined graph with 22 inferred TypeScript-to-API bridges. The diagram below is a readable excerpt of that graph—not the full graph—and shows changed modules, direct consumers, transitive consumers, and API type bridges:

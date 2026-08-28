@@ -131,17 +131,10 @@ export function extractModules(state: CompilerState): ModuleExtractionResult {
 
     const moduleText = specifier.text;
 
-    // Use the compiler's resolved module map — this is the key insight.
-    // The compiler has already done the hard work of resolving paths.
-    const resolvedModules = (sourceFile as any).resolvedModules;
-
-    // Try the program's resolution API
-    const resolved = ts.resolveModuleName(
-      moduleText,
-      sourceFile.fileName,
-      program.getCompilerOptions(),
-      ts.sys
-    );
+    // Use the exact resolver used to build the combined compiler program.
+    // A root tsconfig alone cannot resolve every package-local alias in a
+    // workspace, so bypassing it here would silently drop cross-project edges.
+    const resolved = state.resolveModule(moduleText, sourceFile.fileName);
 
     if (resolved.resolvedModule) {
       const resolvedPath = resolved.resolvedModule.resolvedFileName;
@@ -193,10 +186,19 @@ export function extractModules(state: CompilerState): ModuleExtractionResult {
     }
   }
 
+  // A combined program can surface the same source file through multiple
+  // project roots. Preserve one semantic relationship, not one per root.
+  const uniqueImports = importEdges.filter((edge, index, all) =>
+    all.findIndex(candidate =>
+      candidate.from === edge.from && candidate.to === edge.to &&
+      candidate.type === edge.type && candidate.via === edge.via
+    ) === index
+  );
+
   return {
     moduleNodes,
     externalNodes,
-    importEdges,
+    importEdges: uniqueImports,
     compositionEdges,
   };
 }

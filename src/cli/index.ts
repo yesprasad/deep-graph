@@ -15,6 +15,7 @@ import { runApiDiff } from './api-diff';
 import { runPrCheck } from './pr-check';
 import { buildApiGraph, mergeApiGraph, standaloneApiGraph } from '../openapi';
 import type { DependencyGraph } from '../types/graph';
+import packageJson from '../../package.json';
 
 /**
  * Resolve `--openapi` into a list of spec files. Accepts the flag more
@@ -53,6 +54,11 @@ function buildGraph(
     const suspected = compilerState.suspectedGeneratedFiles.length;
     onProgress?.(
       `Identified: TypeScript — compiler ${compilerState.tsVersion}; ${compilerState.sourceFiles.length} source files` +
+      (compilerState.workspace.mode === 'workspace'
+        ? `; ${compilerState.workspace.discoveredProjects.length} discovered projects` +
+          (compilerState.workspace.packageManager ? `; ${compilerState.workspace.packageManager}` : '') +
+          (compilerState.workspace.taskRunner ? ` + ${compilerState.workspace.taskRunner}` : '')
+        : '') +
       (excluded > 0 ? ` (excluded ${excluded} generated outDir file${excluded === 1 ? '' : 's'})` : '') +
       (suspected > 0 ? ` — warning: ${suspected} likely generated file${suspected === 1 ? '' : 's'} included` : '')
     );
@@ -162,7 +168,7 @@ if (showBanner) {
 program
   .name('deep-graph')
   .description('PR-focused dependency graph extraction for TypeScript and Java projects')
-  .version('0.2.0')
+  .version(packageJson.version)
   .option('--no-banner', 'Suppress ASCII banner');
 
 // ── Analyze Command ──

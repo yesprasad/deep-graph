@@ -11,6 +11,7 @@ import { extractGraph } from '../extractor';
 import { resolveTarget, reverseTraverse } from '../cli/blast';
 import { buildApiGraph, mergeApiGraph } from '../openapi';
 import type { DependencyGraph, GraphNode } from '../types/graph';
+import packageJson from '../../package.json';
 
 let cachedGraph: DependencyGraph | null = null;
 let cachedProjectRoot: string | null = null;
@@ -64,7 +65,7 @@ function discoverSpecs(dir: string): string[] {
 
 const server = new McpServer({
   name: 'deep-graph',
-  version: '0.2.0',
+  version: packageJson.version,
 }, {
   capabilities: {
     tools: {},

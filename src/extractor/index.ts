@@ -68,6 +68,7 @@ export function extractGraph(state: CompilerState): DependencyGraph {
     symbolCount: symbolResult.symbolNodes.length,
     externalPackages: moduleResult.externalNodes.length,
     generatedAt: new Date().toISOString(),
+    workspace: state.workspace,
   };
 
   return { metadata, nodes, edges };
